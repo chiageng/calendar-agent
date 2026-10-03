@@ -356,6 +356,7 @@ class EventDraft(BaseModel):
     calendar_name: str | None = None
     link: str | None = None  # meeting URL, stored in the description; never auto-generated
     reminder_minutes_before: int | None = DEFAULT_REMINDER_MINUTES  # None = calendar default
+    duration_defaulted: bool = False  # True when the user gave no length and the default applied
 
     @property
     def calendar_label(self) -> str:

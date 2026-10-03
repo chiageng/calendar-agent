@@ -92,14 +92,18 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
 
     @server.tool(
         description=(
-            "Prepare a NEW event draft (does not create it). 'when' = user's start phrase "
-            "('Wednesday 2pm', 'tomorrow 15:30', '5 Oct 6pm'). Pass duration_minutes or 'end' "
-            "('3pm') ONLY if the user said how long; if they did not, omit both and the tool "
-            "will ask. attendees must be e-mail addresses; send_invitations=true e-mails them. "
-            "'link' = a meeting URL the user gave (stored in the notes; never invented). "
-            "reminder_minutes_before defaults to 1440 (one day); pass the user's wish, e.g. 120 "
-            "for 2 hours, 0 for no reminder, -1 for the calendar's default. Returns a preview "
-            "and a draft id."
+            "Prepare a NEW event draft (does not create it). "
+            "subject = a SHORT title only, e.g. 'Lunch', 'Meeting', 'Project review with Alice'; "
+            "never put the place, day, time or words like 'another' in it. "
+            "location = the place, e.g. 'Shaw Centre'. "
+            "when = the user's own start phrase ('Monday 12pm', 'tomorrow 15:30'); never add a "
+            "day the user did not say. Pass duration_minutes or end ('6pm') only if the user "
+            "gave a length or an end time ('4pm-6pm' -> when '4pm', end '6pm'); otherwise omit "
+            "both and a 1 hour default is used and shown. attendees must be e-mail addresses; "
+            "send_invitations=true e-mails them. link = a meeting URL the user gave. "
+            "reminder_minutes_before: default 1440 (one day), 0 = none, -1 = calendar default. "
+            "Example: 'Monday lunch 12pm shaw centre' -> subject 'Lunch', when 'Monday 12pm', "
+            "location 'Shaw Centre'. Returns a preview and a draft id."
         )
     )
     def draft_create_event(
@@ -132,6 +136,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
         description=(
             "Prepare a draft that moves/renames/relocates an EXISTING event (does not apply it). "
             "Identify the event with 'find' (subject text) plus 'on' (day phrase), or event_id. "
+            "To change a draft that is still waiting (for example 'make it 2 hours'), pass its "
+            "draft id (d-xxxxxx) as event_id with only the changed fields. "
             "new_when = new start phrase (duration kept unless new_duration_minutes/new_end). "
             "new_link = a meeting URL to attach ('' removes it). new_reminder_minutes_before "
             "sets the reminder: minutes, 0 = none, -1 = calendar default. notify_attendees=true "

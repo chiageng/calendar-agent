@@ -17,6 +17,7 @@ from .models import (
     UpdateDraft,
 )
 from .timeutil import SGT, format_dt, zone_name
+from .titles import format_duration
 
 _NONE = "(none)"
 
@@ -184,6 +185,15 @@ def format_create_preview(draft: EventDraft, tz: tzinfo = SGT) -> str:
         ("Subject", draft.subject),
         ("Start", format_dt(draft.start, tz)),
         ("End", format_dt(draft.end, tz)),
+        (
+            "Duration",
+            format_duration(int((draft.end - draft.start).total_seconds() // 60))
+            + (
+                ' (default; reply e.g. "make it 2 hours" to change)'
+                if draft.duration_defaulted
+                else ""
+            ),
+        ),
         ("Calendar", draft.calendar_label),
         ("Location", draft.location or _NONE),
         ("Meeting link", draft.link or "(none — Meet/Teams links are not created by this tool)"),

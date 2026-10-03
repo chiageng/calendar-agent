@@ -68,7 +68,9 @@ def test_ambiguity_and_errors_are_returned_not_raised(server) -> None:
     out = _text(_call(server, "draft_create_event", subject="X", when="tomorrow morning"))
     assert out.startswith("QUESTION:") and "specific time" in out
     out = _text(_call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00"))
-    assert out.startswith("QUESTION:") and "How long" in out  # no duration given: ask, never guess
+    # no length given: a labelled 1 hour default, never a silent guess
+    assert "End              : 2026-10-07 20:00" in out
+    assert 'Duration         : 1 hour (default; reply e.g. "make it 2 hours" to change)' in out
     out = _text(
         _call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00", end="9pm")
     )
@@ -279,3 +281,178 @@ def test_reminder_tri_state(server, google: FakeGoogleClient) -> None:
         )
     )
     assert "Reminder" in upd and "calendar default" in upd or "ERROR" in upd
+
+
+def test_subject_and_location_are_cleaned(server, google: FakeGoogleClient) -> None:
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Another meeting Shaw centre",
+            when="2026-10-07T16:00",
+            end="6pm",
+        )
+    )
+    assert "Subject          : Meeting" in out
+    assert "Location         : Shaw Centre" in out
+    assert (
+        "Duration         : 2 hours" in out
+        and "default" not in out.split("Duration")[1].splitlines()[0]
+    )
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Monday lunch 12pm shaw centre",
+            when="2026-10-07T12:00",
+        )
+    )
+    assert "Subject          : Lunch" in out and "Location         : Shaw Centre" in out
+
+
+def test_past_start_asks_which_day(server, monkeypatch) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from outlook_calendar_agent import agent_api
+
+    monkeypatch.setattr(
+        agent_api,
+        "_now",
+        lambda rt: datetime(2026, 10, 3, 18, 0, tzinfo=ZoneInfo("Asia/Singapore")),
+    )
+    out = _text(_call(server, "draft_create_event", subject="Meeting", when="4pm", end="6pm"))
+    assert out.startswith("QUESTION:") and "already passed" in out
+
+
+def _at(monkeypatch, *args) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from outlook_calendar_agent import agent_api
+
+    moment = datetime(*args, tzinfo=ZoneInfo("Asia/Singapore"))
+    monkeypatch.setattr(agent_api, "_now", lambda rt: moment)
+
+
+def test_past_time_without_day_offers_tomorrow(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 23, 50)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="12:30am"))
+    assert out.startswith("QUESTION:") and "00:30 on Saturday 03 Oct has already passed" in out
+    # worded so that a plain "yes" is not an answer: it must not look like a yes/no question
+    assert "Which day do you mean" in out and "'tomorrow 00:30'" in out and "Do you mean" not in out
+
+
+def test_explicit_past_day_is_drafted_with_a_note(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Gym", when="yesterday 3pm"))
+    assert "Draft saved as" in out and "2026-10-02" in out
+    assert "Note: this start time is in the past." in out
+
+
+def test_start_a_few_minutes_ago_is_fine(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="5:57pm"))
+    assert "Draft saved as" in out and "in the past" not in out
+
+
+def test_past_question_uses_local_time(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="2026-10-03T08:30:00Z"))
+    # 08:30Z is 16:30 in Singapore: an explicit moment, so it is drafted and shown in local time
+    assert "Draft saved as" in out and "16:30" in out and "in the past" in out
+
+
+def test_duration_bounds_and_empty_title(server) -> None:
+    when = "2026-10-07T12:00"
+    out = _text(_call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=-5))
+    assert out.startswith("ERROR:") and "duration_minutes" in out
+    out = _text(
+        _call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=100000)
+    )
+    assert out.startswith("ERROR:") and "duration_minutes" in out
+    # 0 means "not given": the labelled default applies
+    out = _text(_call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=0))
+    assert "1 hour (default" in out
+    out = _text(_call(server, "draft_create_event", subject="  ", when=when))
+    assert out.startswith("ERROR:") and "title" in out
+
+
+def _draft_id(out: str) -> str:
+    return out.split("Draft saved as ")[1].split(".")[0]
+
+
+def test_a_waiting_draft_can_be_amended_through_update(server, google_audit_entries) -> None:
+    first = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Dinner",
+            when="2026-10-09T19:00",
+            location="MBS",
+        )
+    )
+    old_id = _draft_id(first)
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_duration_minutes=120))
+    new_id = _draft_id(out)
+    assert new_id != old_id and f"Replaces draft {old_id}" in out
+    assert "Action           : CREATE event" in out  # still a create, nothing on the calendar
+    assert "Subject          : Dinner" in out and "Location         : MBS" in out
+    assert "2026-10-09 19:00" in out and "2026-10-09 21:00" in out
+    assert "Duration         : 2 hours" in out and "default" not in out.split("Duration")[1][:40]
+    listing = _text(_call(server, "list_drafts"))
+    assert new_id in listing and old_id not in listing
+    trail = [(e["stage"], e["draft_id"]) for e in google_audit_entries()]
+    assert trail == [("proposed", old_id), ("rejected", old_id), ("proposed", new_id)]
+
+    # a time-only move stays on the draft's day and keeps the new length
+    moved = _text(_call(server, "draft_update_event", event_id=new_id, new_when="6pm"))
+    assert "2026-10-09 18:00" in moved and "2026-10-09 20:00" in moved
+
+    # the old draft can no longer be confirmed
+    gone = _text(_call(server, "confirm_draft", draft_id=old_id, user_reply="yes"))
+    assert gone.startswith("ERROR:") and "not found" in gone
+
+
+def test_amending_an_unknown_draft_or_deleting_by_draft_id_fails(server) -> None:
+    out = _text(_call(server, "draft_update_event", event_id="d-000000", new_when="6pm"))
+    assert out.startswith("ERROR:") and "not found" in out
+    out = _text(_call(server, "draft_delete_event", event_id="d-70da7c"))
+    assert out.startswith("ERROR:") and "discard_draft" in out
+
+
+def test_amending_keeps_the_title_and_guards_past_times(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    first = _text(_call(server, "draft_create_event", subject="Trip to Sentosa", when="today 8pm"))
+    old_id = _draft_id(first)
+    # a bare time that has already passed on the draft's day asks, and the draft is kept
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_when="3pm"))
+    assert out.startswith("QUESTION:") and "15:00 on Saturday 03 Oct has already passed" in out
+    assert old_id in _text(_call(server, "list_drafts"))
+    # a new location does not re-clean the title the user already saw
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_location="sentosa"))
+    assert "Subject          : Trip to Sentosa" in out and "Location         : Sentosa" in out
+
+
+def test_end_time_edge_cases(server) -> None:
+    # a model that repeats the start as the end gets the labelled default, not an error
+    out = _text(
+        _call(server, "draft_create_event", subject="Dinner", when="2026-10-09T19:00", end="7pm")
+    )
+    assert "2026-10-09 20:00" in out and "1 hour (default" in out
+    # a time-only end before the start runs past midnight
+    out = _text(
+        _call(server, "draft_create_event", subject="Party", when="2026-10-09T23:00", end="1am")
+    )
+    assert "2026-10-10 01:00" in out and "Duration         : 2 hours" in out
+    # an end with its own day is taken as written, so an earlier one is still an error
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Trip",
+            when="2026-10-09T19:00",
+            end="2026-10-08T19:00",
+        )
+    )
+    assert out.startswith("ERROR:") and "after the start" in out
