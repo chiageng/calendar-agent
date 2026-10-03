@@ -40,6 +40,8 @@ def test_create_payload_is_minimal_and_in_singapore_time() -> None:
         "start": {"dateTime": "2026-10-07T14:00:00", "timeZone": "Asia/Singapore"},
         "end": {"dateTime": "2026-10-07T14:45:00", "timeZone": "Asia/Singapore"},
         "location": {"displayName": "Room 4"},
+        "isReminderOn": True,
+        "reminderMinutesBeforeStart": 1440,
     }
     # Deferred features must never be set implicitly.
     for forbidden in ("isOnlineMeeting", "onlineMeetingProvider", "recurrence", "organizer"):
@@ -77,8 +79,9 @@ def test_google_payload_is_minimal_and_in_singapore_time() -> None:
         "end": {"dateTime": "2026-10-07T14:45:00+08:00", "timeZone": "Asia/Singapore"},
         "location": "Room 4",
         "description": "b",
+        "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 1440}]},
     }
-    for forbidden in ("conferenceData", "recurrence", "organizer", "reminders"):
+    for forbidden in ("conferenceData", "recurrence", "organizer"):
         assert forbidden not in payload
 
 

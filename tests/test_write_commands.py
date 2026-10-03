@@ -72,13 +72,13 @@ def test_draft_create_with_attendees_requires_flag(rt, graph: FakeGraphClient):
     assert "Invitations sent : YES" in ok.output
 
 
-@pytest.mark.parametrize("answer", ["no\n", "Yes\n", "YES\n", "y\n", "yes please\n", "\n", ""])
+@pytest.mark.parametrize("answer", ["no\n", "ok\n", "yes yes\n", "y\n", "yes please\n", "\n", ""])
 def test_create_does_not_post_without_exact_yes(rt, graph: FakeGraphClient, audit_entries, answer):
     draft = runner.invoke(app, ["draft-create", *CREATE_ARGS, "--no-conflict-check"])
     draft_id = _draft_id(draft.output)
     result = runner.invoke(app, ["create", "--draft", draft_id], input=answer)
     assert result.exit_code == UserCancelledError.exit_code, result.output
-    assert "Create this event? Type exactly yes to continue:" in result.output
+    assert "Create this event? Type yes to continue (anything else cancels):" in result.output
     assert "Cancelled. No changes were made." in result.output
     assert graph.write_calls == []
     assert [e["stage"] for e in audit_entries()] == ["proposed", "rejected"]
@@ -98,6 +98,8 @@ def test_create_posts_exactly_once_after_yes(rt, graph: FakeGraphClient, audit_e
         "start": {"dateTime": "2026-10-07T14:00:00", "timeZone": "Asia/Singapore"},
         "end": {"dateTime": "2026-10-07T14:45:00", "timeZone": "Asia/Singapore"},
         "location": {"displayName": "Room 4"},
+        "isReminderOn": True,
+        "reminderMinutesBeforeStart": 1440,
     }
     assert "Event ID: NEW-ID" in result.output
     stages = [e["stage"] for e in audit_entries()]
@@ -164,13 +166,13 @@ def test_draft_update_moves_event_keeping_duration(rt, graph: FakeGraphClient):
     assert graph.write_calls == []
 
 
-@pytest.mark.parametrize("answer", ["no\n", "Yes\n", ""])
+@pytest.mark.parametrize("answer", ["no\n", "nah\n", ""])
 def test_update_does_not_patch_without_exact_yes(rt, graph: FakeGraphClient, audit_entries, answer):
     draft = runner.invoke(app, ["draft-update", "--event-id", EVENT_ID, "--subject", "Renamed"])
     draft_id = _draft_id(draft.output)
     result = runner.invoke(app, ["update", "--draft", draft_id], input=answer)
     assert result.exit_code == UserCancelledError.exit_code, result.output
-    assert "Update this event? Type exactly yes to continue:" in result.output
+    assert "Update this event? Type yes to continue (anything else cancels):" in result.output
     assert graph.write_calls == []
     assert [e["stage"] for e in audit_entries()] == ["proposed", "rejected"]
 
@@ -261,11 +263,14 @@ def test_delete_preview_includes_id_subject_and_singapore_times(rt, graph: FakeG
     assert "Subject  : Project review" in result.output
     assert "Start    : 2026-10-07 14:00 (Asia/Singapore)" in result.output
     assert "End      : 2026-10-07 15:00 (Asia/Singapore)" in result.output
-    assert "Delete this event permanently? Type exactly yes to continue:" in result.output
+    assert (
+        "Delete this event permanently? Type yes to continue (anything else cancels):"
+        in result.output
+    )
     assert graph.write_calls == []
 
 
-@pytest.mark.parametrize("answer", ["YES\n", "y\n", "delete\n", ""])
+@pytest.mark.parametrize("answer", ["yup\n", "y\n", "delete\n", ""])
 def test_delete_does_not_call_graph_without_exact_yes(
     rt, graph: FakeGraphClient, audit_entries, answer
 ):

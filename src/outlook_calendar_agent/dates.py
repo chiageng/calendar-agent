@@ -40,7 +40,18 @@ _TIME_RE = re.compile(
     r"\b(?P<h>\d{1,2})(?:[:.](?P<m>\d{2}))?\s*(?P<ampm>am|pm|a\.m\.|p\.m\.)?(?!\d)",
     re.IGNORECASE,
 )
-_RANGE_SPLIT = re.compile(r"\s+(?:to|until|till|-|–|—|through)\s+|\s*-\s*", re.IGNORECASE)
+_RANGE_SPLIT = re.compile(r"\s+(?:to|until|till|through|-)\s+|\s*[–—]\s*", re.IGNORECASE)
+_MONTHS = (
+    "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    "sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+# Shapes we trust dateutil with: "5 oct", "5th october 2026", "oct 5", "5/10", "5/10/2026"
+_EXPLICIT_DATE_RE = re.compile(
+    rf"^(?:(?:\d{{1,2}})(?:st|nd|rd|th)?\s+(?:{_MONTHS})(?:\s+\d{{4}})?"
+    rf"|(?:{_MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:\s+\d{{4}})?"
+    rf"|\d{{1,2}}\s*/\s*\d{{1,2}}(?:\s*/\s*\d{{2,4}})?)$",
+    re.IGNORECASE,
+)
 
 
 class DateAmbiguity(Exception):
@@ -123,13 +134,18 @@ def resolve_day(text: str, *, now: datetime, tz: tzinfo = SGT) -> date | None:
             return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
         except ValueError:
             return None
+    if not _EXPLICIT_DATE_RE.match(phrase):
+        return None  # anything else ("may", "3", "tuesday 9") is not a date we will guess at
     try:
         parsed = du_parser.parse(phrase, dayfirst=True, default=datetime.combine(today, time.min))
     except (ValueError, OverflowError):
         return None
-    if _first_time_token(phrase) and not re.search(r"[a-z]{3,}|\d{1,2}\s*/\s*\d{1,2}", phrase):
-        return None  # a bare time such as "3pm", not a date
-    return parsed.date()
+    has_year = bool(re.search(r"\b\d{4}\b|/\s*\d{2,4}\s*$", phrase))
+    result = parsed.date()
+    if not has_year and result < today:
+        # "5 Jan" said in October means next January, not nine months ago
+        result = result.replace(year=result.year + 1)
+    return result
 
 
 # ---- times ----------------------------------------------------------------------------------
@@ -164,17 +180,22 @@ def resolve_time(text: str) -> time | None:
 
 
 # ---- combined -------------------------------------------------------------------------------
-def resolve_moment(text: str, *, now: datetime, tz: tzinfo = SGT) -> datetime:
+def resolve_moment(
+    text: str, *, now: datetime, tz: tzinfo = SGT, default_day: date | None = None
+) -> datetime:
     """Resolve 'wednesday 2pm', 'tomorrow 15:30', '5 oct 6pm', '2026-10-07T14:00' to a datetime.
 
-    Raises DateAmbiguity when the day or the time is missing or vague.
+    A time without a day ("3pm") falls on ``default_day`` (today when not given), so callers can
+    anchor "move it to 3pm" to the event's own day. Raises DateAmbiguity when the day or the time
+    is missing or vague; a date without a time always asks.
     """
     raw = text.strip()
-    try:
-        iso = datetime.fromisoformat(raw)
-        return iso if iso.tzinfo else iso.replace(tzinfo=tz)
-    except ValueError:
-        pass
+    if "T" in raw or " " in raw and re.match(r"\d{4}-\d{2}-\d{2}\s+\d", raw):
+        try:
+            iso = datetime.fromisoformat(raw)
+            return iso if iso.tzinfo else iso.replace(tzinfo=tz)
+        except ValueError:
+            pass
     phrase = _clean(raw)
     time_match = _first_time_token(phrase)
     at = resolve_time(phrase)
@@ -182,7 +203,8 @@ def resolve_moment(text: str, *, now: datetime, tz: tzinfo = SGT) -> datetime:
     day_phrase = phrase
     if at is not None and time_match:
         day_phrase = _clean(phrase[: time_match.start()] + " " + phrase[time_match.end() :])
-    day = resolve_day(day_phrase, now=now, tz=tz) if day_phrase else _today(now, tz)
+    anchor = default_day or _today(now, tz)
+    day = resolve_day(day_phrase, now=now, tz=tz) if day_phrase else anchor
     if day is None:
         raise DateAmbiguity(
             f"I could not work out the day in '{raw}'. Which date do you mean, e.g. "

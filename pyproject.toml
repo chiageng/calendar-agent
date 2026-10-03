@@ -1,6 +1,6 @@
 [project]
 name = "outlook-calendar-agent"
-version = "0.1.0"
+version = "0.3.0"
 description = "Local CLI agent for Google Calendar (or Outlook via Microsoft Graph) with a draft + explicit-yes confirmation gate"
 readme = "README.md"
 authors = [
@@ -21,14 +21,6 @@ dependencies = [
 outlook-calendar = "outlook_calendar_agent.cli:main"
 outlook-calendar-agent = "outlook_calendar_agent.cli:main"
 calendar-agent-mcp = "outlook_calendar_agent.mcp_server:main"
-
-[project.optional-dependencies]
-voice = [
-    "faster-whisper>=1.2.1",
-]
-claude = [
-    "anthropic>=1.11.0",
-]
 
 [build-system]
 requires = ["uv_build>=0.12.22,<0.13.0"]

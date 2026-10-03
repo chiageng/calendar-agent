@@ -3,7 +3,7 @@
 Every function takes the Runtime and plain arguments, returns human-readable text, and never
 raises for expected conditions: ambiguities come back as ``QUESTION: ...``, errors as
 ``ERROR: ...``. Mutations still go through ``write_flow.confirm_and_execute`` and only happen in
-``confirm_draft`` when the caller passes the user's literal reply ``yes``.
+``confirm_draft`` when the caller passes the user's literal reply, the single word ``yes``.
 """
 
 from __future__ import annotations
@@ -20,11 +20,12 @@ from .formatting import (
     format_conflicts,
     format_create_preview,
     format_delete_preview,
+    format_draft_line,
     format_event_list,
     format_tasks,
     format_update_preview,
 )
-from .models import Attendee, DeleteDraft, EventDraft, UpdateDraft
+from .models import DEFAULT_REMINDER_MINUTES, DeleteDraft, EventDraft, UpdateDraft
 from .runtime import Runtime
 from .timeutil import format_dt
 from .write_flow import (
@@ -33,6 +34,8 @@ from .write_flow import (
     check_notification_policy,
     confirm_and_execute,
     ensure_write_allowed,
+    first_pydantic_message,
+    parse_attendees,
     resolve_event,
     summary_for_create,
     summary_for_delete,
@@ -105,9 +108,14 @@ def find_free_slots_text(
             if not e.is_all_day
         ]
         slots: list[tuple[datetime, datetime]] = []
+        now = _now(rt)
         day_cursor = window.start
         while day_cursor < window.end:
             cursor = datetime.combine(day_cursor.date(), start_t, rt.tz)
+            if cursor < now:  # never offer a slot that has already passed
+                rounded = now.replace(second=0, microsecond=0)
+                rounded += timedelta(minutes=(15 - rounded.minute % 15) % 15)
+                cursor = max(cursor, rounded)
             day_end = datetime.combine(day_cursor.date(), end_t, rt.tz)
             for b_start, b_end in sorted(busy):
                 if b_end <= cursor or b_start >= day_end:
@@ -155,47 +163,56 @@ def draft_create_event_text(
     rt: Runtime,
     subject: str,
     when: str,
-    duration_minutes: int = 30,
+    duration_minutes: int | None = None,
     end: str = "",
     location: str = "",
     attendees: list[str] | None = None,
     send_invitations: bool = False,
     calendar: str = "",
+    link: str = "",
+    reminder_minutes_before: int | None = DEFAULT_REMINDER_MINUTES,
 ) -> str:
     def run() -> str:
         ensure_write_allowed(rt)
         now = _now(rt)
         start_dt = resolve_moment(when, now=now, tz=rt.tz)
-        end_dt = resolve_moment(end, now=now, tz=rt.tz) if end else None
-        if end_dt is not None and end_dt.date() != start_dt.date() and len(end) <= 8:
-            end_dt = datetime.combine(start_dt.date(), end_dt.timetz())
+        # a time-only end ("3pm") lands on the start's day, not today
+        end_dt = (
+            resolve_moment(end, now=now, tz=rt.tz, default_day=start_dt.date()) if end else None
+        )
         if end_dt is None:
+            if not duration_minutes:
+                raise DateAmbiguity(
+                    f"How long should '{subject.strip()}' on {start_dt:%A %d %b at %H:%M} be? "
+                    "For example 30 minutes, 1 hour, or until 5pm."
+                )
             end_dt = start_dt + timedelta(minutes=duration_minutes)
         if end_dt <= start_dt:
             raise AgentError("The end time must be after the start time.")
-        people = []
-        for raw in attendees or []:
-            try:
-                people.append(Attendee.parse(raw))
-            except ValueError as exc:
-                raise AgentError(
-                    f"Attendee {raw!r} is not an e-mail address. Ask the user for the address; "
-                    "names cannot be looked up."
-                ) from exc
+        people = parse_attendees(attendees)
         check_notification_policy(
             rt, has_attendees=bool(people), acknowledged=send_invitations, flag="send_invitations"
         )
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
-        draft = EventDraft(
-            subject=subject.strip(),
-            start=start_dt,
-            end=end_dt,
-            location=location or None,
-            attendees=people,
-            send_invitations=send_invitations,
-            calendar_id=target.id,
-            calendar_name=target.name,
-        )
+        try:
+            draft = EventDraft(
+                subject=subject.strip(),
+                start=start_dt,
+                end=end_dt,
+                location=location or None,
+                attendees=people,
+                send_invitations=send_invitations,
+                calendar_id=target.id,
+                calendar_name=target.name,
+                link=link or None,
+                reminder_minutes_before=(
+                    None
+                    if reminder_minutes_before is not None and reminder_minutes_before < 0
+                    else reminder_minutes_before
+                ),
+            )
+        except ValueError as exc:
+            raise AgentError(first_pydantic_message(exc)) from exc
         conflicts = find_conflicts_everywhere(rt.calendar, draft.start, draft.end, target=target)
         saved = rt.drafts.save(draft)
         s = summary_for_create(draft)
@@ -227,6 +244,8 @@ def draft_update_event_text(
     new_location: str = "",
     notify_attendees: bool = False,
     calendar: str = "",
+    new_link: str | None = None,
+    new_reminder_minutes_before: int | None = None,
 ) -> str:
     def run() -> str:
         ensure_write_allowed(rt)
@@ -243,8 +262,21 @@ def draft_update_event_text(
             days=14,
             calendar_id=target.id,
         )
-        start_text = resolve_moment(new_when, now=now, tz=rt.tz).isoformat() if new_when else None
-        end_text = resolve_moment(new_end, now=now, tz=rt.tz).isoformat() if new_end else None
+        # time-only phrases ("3pm") stay on the event's own day: "move it to 3pm" keeps the date
+        anchor = event.start.astimezone(rt.tz).date()
+        start_text = (
+            resolve_moment(new_when, now=now, tz=rt.tz, default_day=anchor).isoformat()
+            if new_when
+            else None
+        )
+        end_anchor = (
+            datetime.fromisoformat(start_text).astimezone(rt.tz).date() if start_text else anchor
+        )
+        end_text = (
+            resolve_moment(new_end, now=now, tz=rt.tz, default_day=end_anchor).isoformat()
+            if new_end
+            else None
+        )
         draft = build_update_draft(
             rt,
             event,
@@ -255,6 +287,8 @@ def draft_update_event_text(
             location=new_location or None,
             notify_attendees=notify_attendees,
             calendar_name=target.name,
+            link=new_link,
+            reminder_minutes_before=new_reminder_minutes_before,
         )
         conflicts = find_conflicts_everywhere(
             rt.calendar,
@@ -332,20 +366,9 @@ def list_drafts_text(rt: Runtime) -> str:
     drafts = rt.drafts.list()
     if not drafts:
         return "No pending drafts."
-    lines = ["Pending drafts:"]
-    for d in drafts:
-        p = d.payload
-        if isinstance(p, EventDraft):
-            lines.append(f"  {d.id}  create  {p.subject}  {format_dt(p.start, rt.tz)}")
-        elif isinstance(p, UpdateDraft):
-            lines.append(
-                f"  {d.id}  update  {p.original.subject}  {format_dt(p.effective_start, rt.tz)}"
-            )
-        elif isinstance(p, DeleteDraft):
-            lines.append(
-                f"  {d.id}  delete  {p.original.subject}  {format_dt(p.original.start, rt.tz)}"
-            )
-    return "\n".join(lines)
+    return "Pending drafts:\n" + "\n".join(
+        f"  {format_draft_line(d.id, d.payload, rt.tz)}" for d in drafts
+    )
 
 
 def discard_draft_text(rt: Runtime, draft_id: str) -> str:
@@ -359,7 +382,7 @@ def discard_draft_text(rt: Runtime, draft_id: str) -> str:
 
 
 def confirm_draft_text(rt: Runtime, draft_id: str, user_reply: str) -> str:
-    """Apply a draft only if ``user_reply`` is exactly ``yes``. Anything else discards it."""
+    """Apply a draft only if ``user_reply`` is the single word ``yes`` (any case); else discard."""
 
     def run() -> str:
         ensure_write_allowed(rt)

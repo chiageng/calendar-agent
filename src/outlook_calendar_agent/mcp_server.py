@@ -11,7 +11,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer
 
-from . import agent_api, runtime
+from . import __version__, agent_api, runtime
 from .runtime import Runtime
 
 log = logging.getLogger("outlook_calendar_agent.mcp")
@@ -25,7 +25,8 @@ Rules for callers:
 - A reply starting with "ERROR:" explains why something could not be done; relay it.
 - draft_* tools never change the calendar. They return a preview and a draft id. Show the
   preview to the user and ask them to reply "yes". Then call confirm_draft(draft_id, reply) with
-  the user's literal reply. Only an exact "yes" applies the draft; anything else discards it.
+  the user's literal reply. Only the single word "yes" (any capitalisation, optional trailing
+  full stop) applies the draft; anything else discards it.
 - Never claim an event was created, moved or deleted unless confirm_draft returned "Created",
   "Updated" or "Deleted".
 """
@@ -35,7 +36,7 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
     server = MCPServer(
         name="calendar-agent",
         instructions=INSTRUCTIONS,
-        version="0.3.0",
+        version=__version__,
         log_level="WARNING",
     )
     state: dict[str, Runtime] = {}
@@ -92,20 +93,25 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
     @server.tool(
         description=(
             "Prepare a NEW event draft (does not create it). 'when' = user's start phrase "
-            "('Wednesday 2pm', 'tomorrow 15:30', '5 Oct 6pm'). Give duration_minutes or 'end' "
-            "('3pm'). attendees must be e-mail addresses; send_invitations=true e-mails them. "
-            "Returns a preview and a draft id to confirm with confirm_draft."
+            "('Wednesday 2pm', 'tomorrow 15:30', '5 Oct 6pm'). Pass duration_minutes or 'end' "
+            "('3pm') ONLY if the user said how long; if they did not, omit both and the tool "
+            "will ask. attendees must be e-mail addresses; send_invitations=true e-mails them. "
+            "'link' = a meeting URL the user gave (stored in the notes; never invented). "
+            "reminder_minutes_before defaults to 1440 (one day); pass the user's wish, e.g. 120 "
+            "for 2 hours, -1 for no reminder. Returns a preview and a draft id."
         )
     )
     def draft_create_event(
         subject: str,
         when: str,
-        duration_minutes: int = 30,
+        duration_minutes: int | None = None,
         end: str = "",
         location: str = "",
         attendees: list[str] | None = None,
         send_invitations: bool = False,
         calendar: str = "",
+        link: str = "",
+        reminder_minutes_before: int = 1440,
     ) -> str:
         return agent_api.draft_create_event_text(
             rt(),
@@ -117,6 +123,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
             attendees=attendees,
             send_invitations=send_invitations,
             calendar=calendar,
+            link=link,
+            reminder_minutes_before=reminder_minutes_before,
         )
 
     @server.tool(
@@ -124,7 +132,9 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
             "Prepare a draft that moves/renames/relocates an EXISTING event (does not apply it). "
             "Identify the event with 'find' (subject text) plus 'on' (day phrase), or event_id. "
             "new_when = new start phrase (duration kept unless new_duration_minutes/new_end). "
-            "notify_attendees=true e-mails attendees. Returns a preview and a draft id."
+            "new_link = a meeting URL to attach ('' removes it). new_reminder_minutes_before "
+            "sets the reminder (-1 = calendar default). notify_attendees=true e-mails attendees. "
+            "Returns a preview and a draft id."
         )
     )
     def draft_update_event(
@@ -138,6 +148,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
         new_location: str = "",
         notify_attendees: bool = False,
         calendar: str = "",
+        new_link: str | None = None,
+        new_reminder_minutes_before: int | None = None,
     ) -> str:
         return agent_api.draft_update_event_text(
             rt(),
@@ -151,6 +163,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
             new_location=new_location,
             notify_attendees=notify_attendees,
             calendar=calendar,
+            new_link=new_link,
+            new_reminder_minutes_before=new_reminder_minutes_before,
         )
 
     @server.tool(
@@ -182,8 +196,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
     @server.tool(
         description=(
             "Apply a draft. Pass the user's LITERAL reply as user_reply. The draft is applied only "
-            "if the reply is exactly 'yes'; any other reply discards it. Never pass 'yes' unless "
-            "the user actually typed it."
+            "if the reply is the single word 'yes' (any capitalisation); any other reply discards "
+            "it. Never pass 'yes' unless the user actually typed it or tapped a Yes button."
         )
     )
     def confirm_draft(draft_id: str, user_reply: str) -> str:

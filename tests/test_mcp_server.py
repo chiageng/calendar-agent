@@ -10,7 +10,7 @@ from mcp import Client
 
 from outlook_calendar_agent.mcp_server import build_server
 
-from .conftest import GOOGLE_EVENT_ID, FakeGoogleClient
+from .conftest import GOOGLE_EVENT_ID, FakeGoogleClient, google_event
 
 
 def _text(result) -> str:
@@ -67,8 +67,21 @@ def test_reads(server, google: FakeGoogleClient) -> None:
 def test_ambiguity_and_errors_are_returned_not_raised(server) -> None:
     out = _text(_call(server, "draft_create_event", subject="X", when="tomorrow morning"))
     assert out.startswith("QUESTION:") and "specific time" in out
+    out = _text(_call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00"))
+    assert out.startswith("QUESTION:") and "How long" in out  # no duration given: ask, never guess
     out = _text(
-        _call(server, "draft_create_event", subject="X", when="2026-10-07T14:00", calendar="Family")
+        _call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00", end="9pm")
+    )
+    assert "End              : 2026-10-07 21:00" in out  # time-only end lands on the start's day
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="X",
+            when="2026-10-07T14:00",
+            duration_minutes=30,
+            calendar="Family",
+        )
     )
     assert out.startswith("ERROR:") and "read-only" in out
     out = _text(_call(server, "confirm_draft", draft_id="d-000000", user_reply="yes"))
@@ -93,7 +106,7 @@ def test_draft_then_confirm_requires_literal_yes(
     assert google.write_calls == []
 
     # Anything but the literal 'yes' discards the draft and writes nothing.
-    out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="Yes"))
+    out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="yes please"))
     assert "Not confirmed" in out and google.write_calls == []
     assert [e["stage"] for e in google_audit_entries()] == ["proposed", "rejected"]
 
@@ -144,3 +157,56 @@ def test_text_result_has_no_json_wrapping(server) -> None:
     assert result.content[0].type == "text"
     with pytest.raises(json.JSONDecodeError):
         json.loads(result.content[0].text)
+
+
+def test_links_and_reminders_in_drafts_and_listings(server, google: FakeGoogleClient) -> None:
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Sync",
+            when="2026-10-07T16:00",
+            duration_minutes=30,
+            link="https://zoom.us/j/555",
+            reminder_minutes_before=120,
+        )
+    )
+    assert "Meeting link     : https://zoom.us/j/555" in out
+    assert "Reminder         : 2 hours before" in out
+    draft_id = out.split("Draft saved as ")[1].split(".")[0]
+    _call(server, "confirm_draft", draft_id=draft_id, user_reply="yes")
+    payload = google.write_calls[-1].json
+    assert payload["description"] == "Meeting link: https://zoom.us/j/555"
+    assert payload["reminders"] == {
+        "useDefault": False,
+        "overrides": [{"method": "popup", "minutes": 120}],
+    }
+
+    bad = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="S",
+            when="2026-10-07T16:00",
+            duration_minutes=30,
+            link="zoom meeting",
+        )
+    )
+    assert bad.startswith("ERROR:") and "not a valid http" in bad
+
+    # listings show the first link found on the event
+    google.events = [google_event(description="Agenda\nMeeting link: https://meet.example/q")]
+    listing = _text(_call(server, "list_events", when="2026-10-07"))
+    assert "🔗 https://meet.example/q" in listing
+
+    # updates can attach a link and change the reminder on an existing event
+    out = _text(
+        _call(
+            server,
+            "draft_update_event",
+            event_id=GOOGLE_EVENT_ID,
+            new_link="https://teams.example/abc",
+            new_reminder_minutes_before=60,
+        )
+    )
+    assert "https://teams.example/abc" in out and "1 hour before" in out
