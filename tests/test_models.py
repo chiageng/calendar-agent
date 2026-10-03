@@ -142,3 +142,16 @@ def test_draft_roundtrip_json() -> None:
     restored = Draft.model_validate_json(draft.model_dump_json())
     assert restored.kind == "delete"
     assert restored.payload.original.start == datetime(2026, 10, 7, 14, 0, tzinfo=SGT)
+
+
+def test_links_and_with_link_edge_cases() -> None:
+    from outlook_calendar_agent.models import extract_links, with_link
+
+    assert extract_links("Join at https://zoom.us/j/5, dial-in below.") == ["https://zoom.us/j/5"]
+    html = "<p>Agenda</p><p>Meeting link: https://a/b</p>"
+    assert (
+        with_link(html, "https://c/d", html=True)
+        == "<p>Agenda</p>\n<p>Meeting link: https://c/d</p>"
+    )
+    assert with_link("notes\nMeeting link: https://a/b", None) == "notes"
+    assert with_link(None, "https://x/y") == "Meeting link: https://x/y"

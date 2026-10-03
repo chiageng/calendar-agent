@@ -25,7 +25,13 @@ from .formatting import (
     format_tasks,
     format_update_preview,
 )
-from .models import DEFAULT_REMINDER_MINUTES, DeleteDraft, EventDraft, UpdateDraft
+from .models import (
+    DEFAULT_REMINDER_MINUTES,
+    REMINDER_OFF,
+    DeleteDraft,
+    EventDraft,
+    UpdateDraft,
+)
 from .runtime import Runtime
 from .timeutil import format_dt
 from .write_flow import (
@@ -45,6 +51,26 @@ from .write_flow import (
 
 QUESTION = "QUESTION: "
 ERROR = "ERROR: "
+
+
+def _reminder_arg(value: int | None) -> int | None:
+    """Tool argument -> model value: >0 minutes, 0 = no reminder, <0 = calendar default."""
+    if value is None or value < 0:
+        return None
+    return REMINDER_OFF if value == 0 else value
+
+
+def _event_window(rt: Runtime, on: str, now: datetime) -> tuple[datetime, datetime]:
+    window = resolve_window(on, now=now, tz=rt.tz)
+    return window.start, window.end
+
+
+_REJECTIONS = {"", "no", "cancel", "stop", "nope", "nah", "expired", "discard", "不要", "取消"}
+
+
+def _is_rejection(reply: str) -> bool:
+    """Replies that mean 'drop this draft'. Anything else keeps it (e.g. a clarifying question)."""
+    return reply.strip().lower().rstrip(".!") in _REJECTIONS
 
 
 def _guard(func: Callable[[], str]) -> str:
@@ -205,11 +231,7 @@ def draft_create_event_text(
                 calendar_id=target.id,
                 calendar_name=target.name,
                 link=link or None,
-                reminder_minutes_before=(
-                    None
-                    if reminder_minutes_before is not None and reminder_minutes_before < 0
-                    else reminder_minutes_before
-                ),
+                reminder_minutes_before=_reminder_arg(reminder_minutes_before),
             )
         except ValueError as exc:
             raise AgentError(first_pydantic_message(exc)) from exc
@@ -251,16 +273,14 @@ def draft_update_event_text(
         ensure_write_allowed(rt)
         now = _now(rt)
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
-        on_day = None
-        if on:
-            on_day = f"{resolve_window(on, now=now, tz=rt.tz).start:%Y-%m-%d}"
         event = resolve_event(
             rt,
             event_id=event_id or None,
             find=find or None,
-            on=on_day,
+            on=None,
             days=14,
             calendar_id=target.id,
+            window=_event_window(rt, on, now) if on else None,
         )
         # time-only phrases ("3pm") stay on the event's own day: "move it to 3pm" keeps the date
         anchor = event.start.astimezone(rt.tz).date()
@@ -288,7 +308,14 @@ def draft_update_event_text(
             notify_attendees=notify_attendees,
             calendar_name=target.name,
             link=new_link,
-            reminder_minutes_before=new_reminder_minutes_before,
+            reminder_minutes_before=(
+                _reminder_arg(new_reminder_minutes_before)
+                if new_reminder_minutes_before is not None and new_reminder_minutes_before >= 0
+                else None
+            ),
+            use_default_reminder=(
+                new_reminder_minutes_before is not None and new_reminder_minutes_before < 0
+            ),
         )
         conflicts = find_conflicts_everywhere(
             rt.calendar,
@@ -328,14 +355,14 @@ def draft_delete_event_text(
         ensure_write_allowed(rt)
         now = _now(rt)
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
-        on_day = f"{resolve_window(on, now=now, tz=rt.tz).start:%Y-%m-%d}" if on else None
         event = resolve_event(
             rt,
             event_id=event_id or None,
             find=find or None,
-            on=on_day,
+            on=None,
             days=14,
             calendar_id=target.id,
+            window=_event_window(rt, on, now) if on else None,
         )
         draft = build_delete_draft(
             rt, event, notify_attendees=notify_attendees, calendar_name=target.name
@@ -389,14 +416,19 @@ def confirm_draft_text(rt: Runtime, draft_id: str, user_reply: str) -> str:
         draft = rt.drafts.load(draft_id)
         payload = draft.payload
         if not is_exact_confirmation(user_reply):
-            rt.drafts.discard(draft_id)
-            rt.audit.record(
-                action=draft.kind,
-                stage="rejected",
-                draft_id=draft_id,  # type: ignore[arg-type]
-                detail=f"reply was not 'yes': {user_reply[:40]!r}",
+            if _is_rejection(user_reply):
+                rt.drafts.discard(draft_id)
+                rt.audit.record(
+                    action=draft.kind,  # type: ignore[arg-type]
+                    stage="rejected",
+                    draft_id=draft_id,
+                    detail=f"reply was not 'yes': {user_reply[:40]!r}",
+                )
+                return f"Not confirmed. Draft {draft_id} discarded; nothing was changed."
+            return (
+                f"Not confirmed. Draft {draft_id} is kept; reply yes to apply it or cancel to "
+                "discard it."
             )
-            return f"Not confirmed. Draft {draft_id} discarded; nothing was changed."
 
         silent: list[str] = []
         reader = lambda _prompt: "yes"  # noqa: E731 - the literal 'yes' was verified above

@@ -98,7 +98,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
             "will ask. attendees must be e-mail addresses; send_invitations=true e-mails them. "
             "'link' = a meeting URL the user gave (stored in the notes; never invented). "
             "reminder_minutes_before defaults to 1440 (one day); pass the user's wish, e.g. 120 "
-            "for 2 hours, -1 for no reminder. Returns a preview and a draft id."
+            "for 2 hours, 0 for no reminder, -1 for the calendar's default. Returns a preview "
+            "and a draft id."
         )
     )
     def draft_create_event(
@@ -133,8 +134,9 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
             "Identify the event with 'find' (subject text) plus 'on' (day phrase), or event_id. "
             "new_when = new start phrase (duration kept unless new_duration_minutes/new_end). "
             "new_link = a meeting URL to attach ('' removes it). new_reminder_minutes_before "
-            "sets the reminder (-1 = calendar default). notify_attendees=true e-mails attendees. "
-            "Returns a preview and a draft id."
+            "sets the reminder: minutes, 0 = none, -1 = calendar default. notify_attendees=true "
+            "e-mails attendees. 'on' may be a day or a range ('next week'). Returns a preview "
+            "and a draft id."
         )
     )
     def draft_update_event(

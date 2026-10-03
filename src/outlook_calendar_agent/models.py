@@ -21,9 +21,23 @@ from .timeutil import (
 )
 
 _EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
-_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+?(?=[.,;:!?]*(?:\s|$|<|\"|'|\)))")
+
+
+def extract_links(*sources: str | None) -> list[str]:
+    """URLs found in the given texts, in order, de-duplicated, without trailing punctuation."""
+    found: list[str] = []
+    for source in sources:
+        for url in _URL_RE.findall(source or ""):
+            url = url.rstrip(".,;:!?")
+            if url and url not in found:
+                found.append(url)
+    return found
+
+
 LINK_PREFIX = "Meeting link: "
 DEFAULT_REMINDER_MINUTES = 24 * 60  # one day before, per the user's preference
+REMINDER_OFF = -1  # sentinel: no reminder at all (None means "provider default")
 _NAMED_EMAIL_RE = re.compile(r"^\s*(?P<name>[^<>]*?)\s*<(?P<email>[^<>]+)>\s*$")
 
 # Small projections for Graph $select. Listing uses the minimal set; details add write context.
@@ -45,7 +59,7 @@ DETAIL_SELECT: tuple[str, ...] = LIST_SELECT + (
     "isOnlineMeeting",
     "webLink",
     "changeKey",
-    "bodyPreview",
+    "body",
     "isReminderOn",
     "reminderMinutesBeforeStart",
 )
@@ -143,17 +157,13 @@ class CalendarEvent(BaseModel):
     web_link: str | None = None
     change_key: str | None = None
     description: str | None = None
-    reminder_minutes_before: int | None = None  # None = calendar default
+    description_is_html: bool = False
+    reminder_minutes_before: int | None = None  # None = calendar default, REMINDER_OFF = none
 
     @property
     def links(self) -> list[str]:
         """Meeting/other URLs: the provider's join link first, then any URL in location/notes."""
-        found: list[str] = []
-        for source in (self.online_join_url, self.location, self.description):
-            for url in _URL_RE.findall(source or ""):
-                if url not in found:
-                    found.append(url)
-        return found
+        return extract_links(self.online_join_url, self.location, self.description)
 
     @classmethod
     def from_graph(cls, data: dict[str, Any], *, calendar_id: str = "primary") -> CalendarEvent:
@@ -186,9 +196,16 @@ class CalendarEvent(BaseModel):
             online_join_url=online.get("joinUrl"),
             web_link=data.get("webLink"),
             change_key=data.get("changeKey"),
-            description=(data.get("bodyPreview") or None),
+            description=(
+                (data.get("body") or {}).get("content") or data.get("bodyPreview") or None
+            ),
             reminder_minutes_before=(
-                data.get("reminderMinutesBeforeStart") if data.get("isReminderOn") else None
+                data.get("reminderMinutesBeforeStart")
+                if data.get("isReminderOn", True)
+                else REMINDER_OFF
+            ),
+            description_is_html=(
+                str((data.get("body") or {}).get("contentType") or "").lower() == "html"
             ),
         )
 
@@ -248,15 +265,21 @@ def _google_reminder(reminders: dict[str, Any] | None) -> int | None:
     popups = [
         o.get("minutes") for o in reminders.get("overrides") or [] if o.get("minutes") is not None
     ]
-    return min(popups) if popups else None
+    return min(popups) if popups else REMINDER_OFF  # overrides present but empty = no reminder
 
 
-def with_link(description: str | None, link: str | None) -> str | None:
-    """Return the description with exactly one 'Meeting link:' line (replaced if present)."""
-    lines = [ln for ln in (description or "").splitlines() if not ln.startswith(LINK_PREFIX)]
+_LINK_LINE_RE = re.compile(rf"(?:<p>\s*)?{re.escape(LINK_PREFIX)}\S+(?:\s*</p>)?", re.IGNORECASE)
+
+
+def with_link(description: str | None, link: str | None, *, html: bool = False) -> str | None:
+    """Return the description with exactly one 'Meeting link:' entry (replaced if present).
+
+    Works for plain text and for HTML bodies (Google descriptions are often single-line HTML).
+    """
+    text = _LINK_LINE_RE.sub("", description or "").strip()
     if link:
-        lines.append(f"{LINK_PREFIX}{link}")
-    text = "\n".join(lines).strip()
+        entry = f"<p>{LINK_PREFIX}{link}</p>" if html else f"{LINK_PREFIX}{link}"
+        text = f"{text}\n{entry}".strip() if text else entry
     return text or None
 
 
@@ -271,6 +294,7 @@ class EventSnapshot(BaseModel):
     end: datetime
     location: str | None = None
     description: str | None = None
+    description_is_html: bool = False
     online_join_url: str | None = None
     reminder_minutes_before: int | None = None
     attendees: list[Attendee] = Field(default_factory=list)
@@ -295,6 +319,10 @@ class EventSnapshot(BaseModel):
             is_primary=self.calendar_id == "primary",
             can_write=True,
         )
+
+    @property
+    def links(self) -> list[str]:
+        return extract_links(self.online_join_url, self.location, self.description)
 
     def matches(self, event: CalendarEvent) -> bool:
         if self.change_key and event.change_key:
@@ -380,9 +408,7 @@ class EventDraft(BaseModel):
             payload["location"] = {"displayName": self.location}
         if self.attendees:
             payload["attendees"] = [a.to_graph() for a in self.attendees]
-        if self.reminder_minutes_before is not None:
-            payload["isReminderOn"] = True
-            payload["reminderMinutesBeforeStart"] = self.reminder_minutes_before
+        payload.update(_graph_reminder_fields(self.reminder_minutes_before))
         return payload
 
     def to_google_payload(self, tz: tzinfo = SGT) -> dict[str, Any]:
@@ -402,8 +428,20 @@ class EventDraft(BaseModel):
         return payload
 
 
-def _google_reminder_payload(minutes: int) -> dict[str, Any]:
-    return {"useDefault": False, "overrides": [{"method": "popup", "minutes": minutes}]}
+def _google_reminder_payload(reminder: int | None) -> dict[str, Any]:
+    if reminder is None:
+        return {"useDefault": True}
+    if reminder == REMINDER_OFF:
+        return {"useDefault": False, "overrides": []}
+    return {"useDefault": False, "overrides": [{"method": "popup", "minutes": reminder}]}
+
+
+def _graph_reminder_fields(reminder: int | None) -> dict[str, Any]:
+    if reminder is None:
+        return {}  # provider default
+    if reminder == REMINDER_OFF:
+        return {"isReminderOn": False}
+    return {"isReminderOn": True, "reminderMinutesBeforeStart": reminder}
 
 
 class UpdateDraft(BaseModel):
@@ -416,7 +454,8 @@ class UpdateDraft(BaseModel):
     end: datetime | None = None
     location: str | None = None
     link: str | None = None  # set a meeting link ("" clears it)
-    reminder_minutes_before: int | None = None  # set a reminder; -1 = use calendar default
+    reminder_minutes_before: int | None = None  # minutes, REMINDER_OFF, or None = keep as is
+    use_default_reminder: bool = False  # True = switch back to the calendar default
     notify_attendees: bool = False
 
     @field_validator("link")
@@ -464,21 +503,24 @@ class UpdateDraft(BaseModel):
         if self.link is not None and self.new_description != self.original.description:
             changed.append("link")
         if (
-            self.reminder_minutes_before is not None
-            and self.effective_reminder != self.original.reminder_minutes_before
-        ):
+            self.reminder_minutes_before is not None or self.use_default_reminder
+        ) and self.effective_reminder != self.original.reminder_minutes_before:
             changed.append("reminder")
         return changed
 
     @property
     def new_description(self) -> str | None:
-        return with_link(self.original.description, self.link or None)
+        return with_link(
+            self.original.description, self.link or None, html=self.original.description_is_html
+        )
 
     @property
     def effective_reminder(self) -> int | None:
+        if self.use_default_reminder:
+            return None
         if self.reminder_minutes_before is None:
             return self.original.reminder_minutes_before
-        return None if self.reminder_minutes_before < 0 else self.reminder_minutes_before
+        return self.reminder_minutes_before
 
     def to_graph_patch(self, tz: tzinfo = SGT) -> dict[str, Any]:
         patch: dict[str, Any] = {}
@@ -492,12 +534,12 @@ class UpdateDraft(BaseModel):
         if "location" in changed:
             patch["location"] = {"displayName": self.location}
         if "link" in changed:
-            patch["body"] = {"contentType": "text", "content": self.new_description or ""}
+            patch["body"] = {
+                "contentType": "html" if self.original.description_is_html else "text",
+                "content": self.new_description or "",
+            }
         if "reminder" in changed:
-            reminder = self.effective_reminder
-            patch["isReminderOn"] = reminder is not None
-            if reminder is not None:
-                patch["reminderMinutesBeforeStart"] = reminder
+            patch.update(_graph_reminder_fields(self.effective_reminder) or {"isReminderOn": True})
         return patch
 
     def to_google_patch(self, tz: tzinfo = SGT) -> dict[str, Any]:
@@ -513,10 +555,7 @@ class UpdateDraft(BaseModel):
         if "link" in changed:
             patch["description"] = self.new_description or ""
         if "reminder" in changed:
-            reminder = self.effective_reminder
-            patch["reminders"] = (
-                {"useDefault": True} if reminder is None else _google_reminder_payload(reminder)
-            )
+            patch["reminders"] = _google_reminder_payload(self.effective_reminder)
         return patch
 
 

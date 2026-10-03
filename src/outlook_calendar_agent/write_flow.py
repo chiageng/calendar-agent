@@ -101,8 +101,12 @@ def resolve_event(
     on: str | None,
     days: int,
     calendar_id: str = "primary",
+    window: tuple[datetime, datetime] | None = None,
 ) -> CalendarEvent:
-    """Resolve exactly one event, or raise with a list of candidates."""
+    """Resolve exactly one event, or raise with a list of candidates.
+
+    ``window`` (start, end) overrides ``on``/``days`` when the caller already resolved a range.
+    """
     if event_id and find:
         raise AgentError("Pass either --event-id or --find, not both.")
     if event_id:
@@ -112,7 +116,9 @@ def resolve_event(
             "Choose an event with --event-id <ID> or --find <text> [--on <date> | --days N]."
         )
     try:
-        if on:
+        if window is not None:
+            window_start, window_end = window
+        elif on:
             window_start = start_of_day(parse_user_datetime(on, tz=rt.tz), rt.tz)
             window_end = window_start + timedelta(days=1)
         else:
@@ -146,6 +152,7 @@ def build_update_draft(
     calendar_name: str | None = None,
     link: str | None = None,
     reminder_minutes_before: int | None = None,
+    use_default_reminder: bool = False,
 ) -> UpdateDraft:
     ensure_single_instance(event, verb="update")
     ensure_organizer(event)
@@ -175,6 +182,7 @@ def build_update_draft(
             location=location,
             link=link,
             reminder_minutes_before=reminder_minutes_before,
+            use_default_reminder=use_default_reminder,
             notify_attendees=notify_attendees,
         )
     except ValueError as exc:

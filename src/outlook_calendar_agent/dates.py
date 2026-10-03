@@ -140,7 +140,9 @@ def resolve_day(text: str, *, now: datetime, tz: tzinfo = SGT) -> date | None:
         parsed = du_parser.parse(phrase, dayfirst=True, default=datetime.combine(today, time.min))
     except (ValueError, OverflowError):
         return None
-    has_year = bool(re.search(r"\b\d{4}\b|/\s*\d{2,4}\s*$", phrase))
+    has_year = bool(
+        re.search(r"\b\d{4}\b", phrase) or re.search(r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4}", phrase)
+    )
     result = parsed.date()
     if not has_year and result < today:
         # "5 Jan" said in October means next January, not nine months ago
@@ -160,13 +162,13 @@ def _first_time_token(phrase: str) -> re.Match[str] | None:
 def resolve_time(text: str) -> time | None:
     """Resolve a time phrase ('2pm', '14:30', '2.30 pm', 'noon'). None if no time present."""
     phrase = _clean(text)
-    for word in _VAGUE_TIMES:
-        if re.search(rf"\b{word}\b", phrase):
-            raise DateAmbiguity(
-                f"'{word}' is not a specific time. What time exactly, e.g. 10am or 15:30?"
-            )
     m = _first_time_token(phrase)
     if not m:
+        for word in _VAGUE_TIMES:
+            if re.search(rf"\b{word}\b", phrase):
+                raise DateAmbiguity(
+                    f"'{word}' is not a specific time. What time exactly, e.g. 10am or 15:30?"
+                )
         return None
     hour, minute = int(m.group("h")), int(m.group("m") or 0)
     ampm = (m.group("ampm") or "").replace(".", "")
@@ -175,7 +177,7 @@ def resolve_time(text: str) -> time | None:
     if ampm == "am" and hour == 12:
         hour = 0
     if hour > 23 or minute > 59:
-        return None
+        raise DateAmbiguity(f"'{m.group(0).strip()}' is not a valid time. What time did you mean?")
     return time(hour, minute)
 
 
@@ -203,6 +205,8 @@ def resolve_moment(
     day_phrase = phrase
     if at is not None and time_match:
         day_phrase = _clean(phrase[: time_match.start()] + " " + phrase[time_match.end() :])
+        # "tomorrow evening 7pm": the vague word is redundant once an explicit time is given
+        day_phrase = _clean(re.sub(rf"\b(?:{'|'.join(_VAGUE_TIMES)})\b", " ", day_phrase))
     anchor = default_day or _today(now, tz)
     day = resolve_day(day_phrase, now=now, tz=tz) if day_phrase else anchor
     if day is None:

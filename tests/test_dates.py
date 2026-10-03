@@ -121,3 +121,15 @@ def test_resolve_window_errors() -> None:
         resolve_window("9 oct to 5 oct", now=NOW)
     with pytest.raises(DateAmbiguity, match="could not work out the dates"):
         resolve_window("sometime", now=NOW)
+
+
+def test_review_edge_cases() -> None:
+    # zero-padded month is still a month, not a year: the past date rolls forward
+    assert resolve_day("15/09", now=NOW) == date(2027, 9, 15)
+    assert resolve_day("15/09/2026", now=NOW) == date(2026, 9, 15)
+    # an explicit time wins over a vague word; an invalid time asks about the time, not the day
+    assert resolve_moment("tomorrow evening 7pm", now=NOW) == datetime(
+        2026, 10, 4, 19, 0, tzinfo=SGT
+    )
+    with pytest.raises(DateAmbiguity, match="not a valid time"):
+        resolve_moment("tomorrow 25:00", now=NOW)

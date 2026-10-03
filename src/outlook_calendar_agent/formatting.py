@@ -7,6 +7,7 @@ from datetime import datetime, tzinfo
 from typing import Any
 
 from .models import (
+    REMINDER_OFF,
     Attendee,
     CalendarEvent,
     CalendarInfo,
@@ -142,23 +143,16 @@ def _notification_status(has_attendees: bool, acknowledged: bool) -> str:
 
 
 def _first_link(snapshot: object) -> str:
-    """The meeting link of a snapshot: provider join URL, else the first URL in its notes."""
-    from .models import _URL_RE  # local import keeps formatting free of model internals
-
-    for source in (
-        getattr(snapshot, "online_join_url", None),
-        getattr(snapshot, "location", None),
-        getattr(snapshot, "description", None),
-    ):
-        match = _URL_RE.search(source or "")
-        if match:
-            return match.group(0)
-    return _NONE
+    """The meeting link of a snapshot/event, or the placeholder."""
+    links = getattr(snapshot, "links", None) or []
+    return links[0] if links else _NONE
 
 
 def _reminder_text(minutes: int | None) -> str:
     if minutes is None:
         return "calendar default"
+    if minutes == REMINDER_OFF:
+        return "none"
     if minutes % (24 * 60) == 0:
         days = minutes // (24 * 60)
         return f"{days} day{'s' if days != 1 else ''} before"

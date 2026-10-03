@@ -105,9 +105,12 @@ def test_draft_then_confirm_requires_literal_yes(
     draft_id = out.split("Draft saved as ")[1].split(".")[0]
     assert google.write_calls == []
 
-    # Anything but the literal 'yes' discards the draft and writes nothing.
+    # A clarifying reply keeps the draft; a cancel word discards it. Neither writes anything.
     out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="yes please"))
-    assert "Not confirmed" in out and google.write_calls == []
+    assert "Not confirmed" in out and "kept" in out and google.write_calls == []
+    assert draft_id in _text(_call(server, "list_drafts"))
+    out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="no"))
+    assert "discarded" in out and google.write_calls == []
     assert [e["stage"] for e in google_audit_entries()] == ["proposed", "rejected"]
 
     out = _text(
@@ -210,3 +213,69 @@ def test_links_and_reminders_in_drafts_and_listings(server, google: FakeGoogleCl
         )
     )
     assert "https://teams.example/abc" in out and "1 hour before" in out
+
+
+def test_update_search_uses_the_whole_window(server, google: FakeGoogleClient, monkeypatch) -> None:
+    """'move my dentist appointment next week' must search all of next week, not just Monday."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from outlook_calendar_agent import agent_api
+
+    monkeypatch.setattr(
+        agent_api, "_now", lambda rt: datetime(2026, 10, 3, 9, 0, tzinfo=ZoneInfo("Asia/Singapore"))
+    )
+    out = _text(
+        _call(server, "draft_update_event", find="project review", on="next week", new_when="4pm")
+    )
+    assert "PROPOSED CHANGE" in out, out
+    search = [c for c in google.calls if c.path.endswith("/events") and c.method == "GET"][0]
+    assert search.params["timeMin"] == "2026-10-04T16:00:00Z"  # Mon 5 Oct 00:00 SGT
+    assert search.params["timeMax"] == "2026-10-11T16:00:00Z"  # Mon 12 Oct 00:00 SGT
+    # the time-only new_when stays on the event's own day (7 Oct), not on 'today'
+    assert "2026-10-07 16:00 (Asia/Singapore)   [CHANGED]" in out
+
+
+def test_reminder_tri_state(server, google: FakeGoogleClient) -> None:
+    none = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="A",
+            when="2026-10-07T10:00",
+            duration_minutes=30,
+            reminder_minutes_before=0,
+        )
+    )
+    assert "Reminder         : none" in none
+    _call(
+        server,
+        "confirm_draft",
+        draft_id=none.split("Draft saved as ")[1].split(".")[0],
+        user_reply="yes",
+    )
+    assert google.write_calls[-1].json["reminders"] == {"useDefault": False, "overrides": []}
+    default = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="B",
+            when="2026-10-07T11:00",
+            duration_minutes=30,
+            reminder_minutes_before=-1,
+        )
+    )
+    assert "Reminder         : calendar default" in default
+    _call(
+        server,
+        "confirm_draft",
+        draft_id=default.split("Draft saved as ")[1].split(".")[0],
+        user_reply="yes",
+    )
+    assert "reminders" not in google.write_calls[-1].json
+    upd = _text(
+        _call(
+            server, "draft_update_event", event_id=GOOGLE_EVENT_ID, new_reminder_minutes_before=-1
+        )
+    )
+    assert "Reminder" in upd and "calendar default" in upd or "ERROR" in upd
