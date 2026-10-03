@@ -24,7 +24,7 @@ _LEADING_GLUE_RE = re.compile(
     r"^(?:(?:please|pls)\s+)?"
     r"(?:(?:book|schedule|add|create|set\s+up|arrange|make)\s+(?:me\s+)?"
     r"(?=(?:a|an|another|one\s+more)\s))?"
-    r"(?:(?:another|one\s+more|also|and|then|a|an)\s+)*",
+    r"(?:(?:another|one\s+more|also|and|then|a(?!\s+levels?\b)|an)\s+)*",
     re.IGNORECASE,
 )
 
@@ -63,30 +63,25 @@ _DURATION_RE = re.compile(
 _FULL_DAY = r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
 _SHORT_DAY = r"mon|tues?|wed|thur?s?|fri|sat|sun"
 _DAY_RE = re.compile(
-    rf"(?:\bon\s+)?(?:\b(?:next|this|coming)\s+)?\b(?:{_FULL_DAY}|today|tomorrow|tonight|tmrw?)\b"
+    rf"(?P<lead>(?:\bon\s+)?(?:\b(?:next|this|coming)\s+)?)"
+    rf"\b(?P<day>{_FULL_DAY}|today|tomorrow|tonight|tmrw?)\b"
     r"(?:\s+(?:morning|afternoon|evening|night))?",
     re.IGNORECASE,
 )
-# Words that make the following weekday part of a name: "Black Friday", "Every Monday".
-_NAMED_DAY_PREFIXES = frozenset(
+# Words that make the following weekday part of the title: "Black Friday", "Submit by Friday".
+_KEEP_DAY_AFTER = frozenset(
     [
-        "black",
-        "good",
-        "cyber",
-        "ash",
-        "easter",
-        "palm",
-        "super",
-        "holy",
-        "maundy",
-        "shrove",
-        "fat",
-        "boxing",
-        "casual",
-        "every",
-        "each",
+        "black", "good", "cyber", "ash", "easter", "palm", "super", "holy", "maundy", "shrove",
+        "fat", "boxing", "casual", "every", "each", "by", "before", "until", "till", "about",
+        "for", "of", "after", "since",
     ]
+)  # fmt: skip
+# ... and words that do the same when they follow it: "Friday prayers", "Sunday service".
+_KEEP_DAY_BEFORE_RE = re.compile(r"\s+(?:prayers?|service|mass|school|roast|market)\b", re.I)
+_TIME_AHEAD_RE = re.compile(
+    rf"\s*(?:at\s+|from\s+|@\s*)?(?:{_CLOCK}\s*(?:am|pm)|\d{{1,2}}:\d{{2}})", re.I
 )
+_TIME_BEHIND_RE = re.compile(r"(?:[ap]m|\d:\d{2})\s*$", re.I)
 # Short forms collide with names and words ("Sun Wei", "SAT prep", "Wed Lee"), so they are only
 # removed after next/this/coming, or in lowercase after "on" or at either end of the title.
 _SHORT_DAY_PREFIXED_RE = re.compile(
@@ -120,6 +115,8 @@ _ENDS_WITH_PLACE_RE = re.compile(rf"\b(?:{_PLACE_ENDINGS})$", re.IGNORECASE)
 # A "place" containing one of these is really more title ("his office about the lease").
 _NOT_PLACE_RE = re.compile(r"\b(?:with|about|re|for|regarding|on|to|and|length)\b", re.IGNORECASE)
 _MAX_PLACE_WORDS = 6
+# "Trip to Paris" at Paris keeps its title: the place is its object, not a repeat of the location.
+_NOT_AFTER_DIRECTION = "".join(rf"(?<!\b{w}\s)" for w in ("to", "from", "of", "on", "for", "about"))
 
 
 def _tidy(text: str) -> str:
@@ -132,24 +129,52 @@ def _capitalise_first(text: str) -> str:
 
 
 def _title_place(text: str) -> str:
-    """Capitalise every all-lowercase word of a place; leave other words as the user typed."""
-    return " ".join(w[:1].upper() + w[1:] if w.islower() else w for w in text.split(" "))
+    """Capitalise the all-lowercase words of a place; leave other words as the user typed.
+
+    A short word without a vowel is taken as initials: "mbs" -> "MBS", "hq" -> "HQ".
+    """
+
+    def word(w: str) -> str:
+        if not w.islower():
+            return w
+        if len(w) <= 4 and w.isalpha() and not re.search(r"[aeiouy]", w):
+            return w.upper()
+        return w[:1].upper() + w[1:]
+
+    return " ".join(word(w) for w in text.split(" "))
 
 
 def _drop_day(match: re.Match[str]) -> str:
-    before = match.string[: match.start()].split()
-    if before and before[-1].lower() in _NAMED_DAY_PREFIXES:
+    """Remove a day word only where it is scheduling information, not part of the title.
+
+    "tomorrow"/"today" and "on Monday"/"next Friday" always are. A bare weekday is when it
+    opens or closes the title or sits next to a time; in the middle it is a topic
+    ("Meeting about Friday release" is not about when the meeting is).
+    """
+    text = match.string
+    before, after = text[: match.start()], text[match.end() :]
+    previous = before.split()[-1].lower() if before.split() else ""
+    if previous in _KEEP_DAY_AFTER:
         return match.group(0)
-    return " "
+    relative = match.group("day").lower() not in _FULL_DAY.split("|")
+    at_start, at_end = not before.strip(), not after.strip()
+    if at_start and not relative and _KEEP_DAY_BEFORE_RE.match(after):
+        return match.group(0)
+    near_time = _TIME_AHEAD_RE.match(after) or _TIME_BEHIND_RE.search(before)
+    if relative or match.group("lead") or at_start or at_end or near_time:
+        return " "
+    return match.group(0)
 
 
 def _strip_when(title: str) -> str:
-    """Remove times, durations and day words that leaked into the title."""
-    for pattern in (_AMPM_TIME_RE, _CLOCK24_RE, _NAMED_TIME_RE, _DURATION_RE):
-        title = _tidy(pattern.sub(" ", title))
+    """Remove day words, times and durations that leaked into the title."""
+    # days first: whether a weekday is next to a time can only be seen while the time is there
     title = _tidy(_DAY_RE.sub(_drop_day, title))
     title = _tidy(_SHORT_DAY_PREFIXED_RE.sub(" ", title))
-    return _tidy(_SHORT_DAY_LOWER_RE.sub(" ", title))
+    title = _tidy(_SHORT_DAY_LOWER_RE.sub(" ", title))
+    for pattern in (_AMPM_TIME_RE, _CLOCK24_RE, _NAMED_TIME_RE, _DURATION_RE):
+        title = _tidy(pattern.sub(" ", title))
+    return title
 
 
 def _looks_like_place(place: str) -> bool:
@@ -204,7 +229,7 @@ def clean_subject_and_location(subject: str, location: str | None = None) -> tup
         #    or the bare place at the end. Whole words only ("Shawn birthday" keeps its name).
         escaped = re.escape(place)
         without = re.sub(
-            rf"(?:\b(?:at|in)\s+|@\s*){escaped}(?!\w)|(?<!\w){escaped}\s*$",
+            rf"(?:\b(?:at|in)\s+|@\s*){escaped}(?!\w)|{_NOT_AFTER_DIRECTION}(?<!\w){escaped}\s*$",
             " ",
             title,
             flags=re.IGNORECASE,

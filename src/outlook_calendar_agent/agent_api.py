@@ -211,21 +211,8 @@ def draft_create_event_text(
             raise AgentError("An event needs a title. What should it be called?")
         _check_duration(duration_minutes)
         start_dt = resolve_moment(when, now=now, tz=rt.tz).astimezone(rt.tz)
-        past_note = ""
-        if start_dt < now - PAST_START_GRACE:
-            # A bare time ("4pm" said at 6pm) lands on today; the user most likely means the
-            # next occurrence, so ask. A day the user named explicitly is taken as given.
-            tomorrow = start_dt.date() + timedelta(days=1)
-            if resolve_moment(when, now=now, tz=rt.tz, default_day=tomorrow) != start_dt:
-                raise DateAmbiguity(
-                    f"{start_dt:%H:%M} today has already passed. Do you mean tomorrow "
-                    f"({tomorrow:%A %d %b}) for '{title}'?"
-                )
-            past_note = "\nNote: this start time is in the past."
-        # a time-only end ("3pm") lands on the start's day, not today
-        end_dt = (
-            resolve_moment(end, now=now, tz=rt.tz, default_day=start_dt.date()) if end else None
-        )
+        past_note = _past_start_note(rt, when, start_dt, now=now, title=title)
+        end_dt = _resolve_end(rt, end, start_dt, now=now)
         defaulted = False
         if end_dt is None:
             # 0 is what a small model sends for "not given": same labelled default as omitting it
@@ -289,6 +276,42 @@ def _reject_draft_id(event_id: str) -> None:
         )
 
 
+def _past_start_note(rt: Runtime, when: str, start: datetime, *, now: datetime, title: str) -> str:
+    """Ask when a bare time has already passed; note it when the user named the day.
+
+    "4pm" said at 6pm most likely means another day, so the question asks for the day (it is
+    worded so that a plain yes is not an answer). A day given explicitly is taken as meant.
+    """
+    if start >= now - PAST_START_GRACE:
+        return ""
+    another_day = start.date() + timedelta(days=1)
+    if resolve_moment(when, now=now, tz=rt.tz, default_day=another_day) != start:
+        raise DateAmbiguity(
+            f"{start:%H:%M} on {start:%A %d %b} has already passed. Which day do you mean for "
+            f"'{title}'? For example 'tomorrow {start:%H:%M}'."
+        )
+    return "\nNote: this start time is in the past."
+
+
+def _resolve_end(rt: Runtime, end: str, start: datetime, *, now: datetime) -> datetime | None:
+    """Resolve an end phrase against the start. None means "no usable end was given".
+
+    A time-only end lands on the start's day. If that is the start itself (a model echoing the
+    start time as the end) it counts as not given; if it is earlier, the event runs past
+    midnight ("11pm" to "1am"). An end that names its own day is taken as written.
+    """
+    if not end:
+        return None
+    day = start.date()
+    resolved = resolve_moment(end, now=now, tz=rt.tz, default_day=day)
+    if resolved == start:
+        return None
+    next_day = resolve_moment(end, now=now, tz=rt.tz, default_day=day + timedelta(days=1))
+    if resolved < start and next_day != resolved:
+        return next_day
+    return resolved
+
+
 def _check_duration(minutes: int | None) -> None:
     if minutes is not None and not 0 <= minutes <= MAX_EVENT_MINUTES:
         raise AgentError(
@@ -326,24 +349,28 @@ def _amend_waiting_draft(
     start = payload.start.astimezone(rt.tz)
     length = payload.end - payload.start
     defaulted = payload.duration_defaulted
+    past_note = ""
     if new_when:
         # a time-only phrase ("3pm") stays on the draft's own day
         moment = resolve_moment(new_when, now=now, tz=rt.tz, default_day=start.date())
         start = moment.astimezone(rt.tz)
+        past_note = _past_start_note(rt, new_when, start, now=now, title=payload.subject)
     end = start + length
-    if new_end:
-        end = resolve_moment(new_end, now=now, tz=rt.tz, default_day=start.date())
+    new_end_dt = _resolve_end(rt, new_end, start, now=now)
+    if new_end_dt is not None:
+        end = new_end_dt
         defaulted = False
     elif new_duration_minutes:
         end = start + timedelta(minutes=new_duration_minutes)
         defaulted = False
     if end <= start:
         raise AgentError("The end time must be after the start time.")
+    # only text that is new gets cleaned; the title the user already saw stays as it is
     title, place = payload.subject, payload.location
-    if new_subject or new_location:
-        title, place = clean_subject_and_location(
-            new_subject or payload.subject, new_location or payload.location
-        )
+    if new_subject:
+        title, place = clean_subject_and_location(new_subject, new_location or payload.location)
+    elif new_location:
+        place = clean_subject_and_location(payload.subject, new_location)[1]
     changes: dict[str, object] = {
         "subject": title,
         "location": place,
@@ -380,6 +407,7 @@ def _amend_waiting_draft(
         _saved(
             rt, saved.id, format_create_preview(draft, rt.tz), format_conflicts(conflicts, rt.tz)
         )
+        + past_note
         + f"\nReplaces draft {draft_id}, which was discarded."
     )
 

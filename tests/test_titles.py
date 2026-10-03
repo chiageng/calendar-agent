@@ -64,6 +64,12 @@ def test_clean_subject_and_location(subject, location, expected) -> None:
         "Meeting room booking review",
         "Call hospital about results",
         "开会",
+        # weekdays that are the topic, not the schedule
+        "Friday prayers",
+        "Sunday service",
+        "Submit by Friday",
+        "Meeting about Friday release",
+        "A level maths tuition",
     ],
 )
 def test_titles_left_alone(subject) -> None:
@@ -94,6 +100,13 @@ def test_titles_left_alone(subject) -> None:
             ("Dinner with Alice", "Marina Bay Sands"),
         ),
         ("Weeknd Concert at Stadium", None, ("Weeknd Concert", "Stadium")),
+        ("lunch Monday 12pm shaw centre", None, ("Lunch", "Shaw Centre")),
+        ("Monday meeting Shaw house", None, ("Meeting", "Shaw House")),
+        ("standup 9am Friday", None, ("Standup", None)),
+        ("dinner on Friday", None, ("Dinner", None)),
+        # a place that is the object of the title is not removed with the location
+        ("Trip to Paris", "Paris", ("Trip to Paris", "Paris")),
+        ("Lunch", "mbs", ("Lunch", "MBS")),
         ("", None, ("", None)),
     ],
 )
@@ -101,12 +114,17 @@ def test_clean_edge_cases(subject, location, expected) -> None:
     assert clean_subject_and_location(subject, location) == expected
 
 
-def test_long_or_repetitive_input_is_fast_and_untouched() -> None:
+def test_long_or_repetitive_input_is_fast() -> None:
     import time
 
     started = time.monotonic()
     long_title = "a " * 50_000
-    assert clean_subject_and_location(long_title)[0] == long_title.strip()
+    assert clean_subject_and_location(long_title)[0] == long_title.strip()  # over the limit
+    # just under the limit every pattern runs; these shapes are the usual backtracking traps
+    for unit in ("a ", "another ", "at 1", "monday ", "4pm-", "for 2 ", "x at ", "lunch "):
+        text = (unit * 200)[:199]
+        clean_subject_and_location(text)
+        clean_subject_and_location(text, "shaw centre")
     assert time.monotonic() - started < 1
 
 

@@ -338,7 +338,9 @@ def _at(monkeypatch, *args) -> None:
 def test_past_time_without_day_offers_tomorrow(server, monkeypatch) -> None:
     _at(monkeypatch, 2026, 10, 3, 23, 50)
     out = _text(_call(server, "draft_create_event", subject="Call", when="12:30am"))
-    assert out.startswith("QUESTION:") and "tomorrow (Sunday 04 Oct)" in out
+    assert out.startswith("QUESTION:") and "00:30 on Saturday 03 Oct has already passed" in out
+    # worded so that a plain "yes" is not an answer: it must not look like a yes/no question
+    assert "Which day do you mean" in out and "'tomorrow 00:30'" in out and "Do you mean" not in out
 
 
 def test_explicit_past_day_is_drafted_with_a_note(server, monkeypatch) -> None:
@@ -380,7 +382,7 @@ def _draft_id(out: str) -> str:
     return out.split("Draft saved as ")[1].split(".")[0]
 
 
-def test_a_waiting_draft_can_be_amended_through_update(server) -> None:
+def test_a_waiting_draft_can_be_amended_through_update(server, google_audit_entries) -> None:
     first = _text(
         _call(
             server,
@@ -400,6 +402,8 @@ def test_a_waiting_draft_can_be_amended_through_update(server) -> None:
     assert "Duration         : 2 hours" in out and "default" not in out.split("Duration")[1][:40]
     listing = _text(_call(server, "list_drafts"))
     assert new_id in listing and old_id not in listing
+    trail = [(e["stage"], e["draft_id"]) for e in google_audit_entries()]
+    assert trail == [("proposed", old_id), ("rejected", old_id), ("proposed", new_id)]
 
     # a time-only move stays on the draft's day and keeps the new length
     moved = _text(_call(server, "draft_update_event", event_id=new_id, new_when="6pm"))
@@ -415,3 +419,40 @@ def test_amending_an_unknown_draft_or_deleting_by_draft_id_fails(server) -> None
     assert out.startswith("ERROR:") and "not found" in out
     out = _text(_call(server, "draft_delete_event", event_id="d-70da7c"))
     assert out.startswith("ERROR:") and "discard_draft" in out
+
+
+def test_amending_keeps_the_title_and_guards_past_times(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    first = _text(_call(server, "draft_create_event", subject="Trip to Sentosa", when="today 8pm"))
+    old_id = _draft_id(first)
+    # a bare time that has already passed on the draft's day asks, and the draft is kept
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_when="3pm"))
+    assert out.startswith("QUESTION:") and "15:00 on Saturday 03 Oct has already passed" in out
+    assert old_id in _text(_call(server, "list_drafts"))
+    # a new location does not re-clean the title the user already saw
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_location="sentosa"))
+    assert "Subject          : Trip to Sentosa" in out and "Location         : Sentosa" in out
+
+
+def test_end_time_edge_cases(server) -> None:
+    # a model that repeats the start as the end gets the labelled default, not an error
+    out = _text(
+        _call(server, "draft_create_event", subject="Dinner", when="2026-10-09T19:00", end="7pm")
+    )
+    assert "2026-10-09 20:00" in out and "1 hour (default" in out
+    # a time-only end before the start runs past midnight
+    out = _text(
+        _call(server, "draft_create_event", subject="Party", when="2026-10-09T23:00", end="1am")
+    )
+    assert "2026-10-10 01:00" in out and "Duration         : 2 hours" in out
+    # an end with its own day is taken as written, so an earlier one is still an error
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Trip",
+            when="2026-10-09T19:00",
+            end="2026-10-08T19:00",
+        )
+    )
+    assert out.startswith("ERROR:") and "after the start" in out
