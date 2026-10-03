@@ -7,7 +7,7 @@ Draft models build the exact Graph payloads. They never set ``isOnlineMeeting``,
 from __future__ import annotations
 
 import re
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -88,8 +88,40 @@ class Attendee(BaseModel):
         return entry
 
 
+class CalendarInfo(BaseModel):
+    """One calendar visible to the signed-in account."""
+
+    id: str
+    name: str
+    is_primary: bool = False
+    can_write: bool = False
+
+    def display(self) -> str:
+        flags = [f for f, on in (("primary", self.is_primary), ("writable", self.can_write)) if on]
+        suffix = f"  [{', '.join(flags)}]" if flags else ""
+        return f"{self.name}{suffix}\n    id: {self.id}"
+
+
+class TaskList(BaseModel):
+    id: str
+    name: str
+
+
+class TaskItem(BaseModel):
+    """A Google Task (read-only). Tasks have a due *date*, not a time."""
+
+    id: str
+    title: str
+    due: date | None = None
+    completed: bool = False
+    notes: str | None = None
+    list_name: str = "My Tasks"
+    in_default_list: bool = True
+
+
 class CalendarEvent(BaseModel):
     id: str
+    calendar_id: str = "primary"
     subject: str = "(no subject)"
     start: datetime
     end: datetime
@@ -106,7 +138,7 @@ class CalendarEvent(BaseModel):
     change_key: str | None = None
 
     @classmethod
-    def from_graph(cls, data: dict[str, Any]) -> CalendarEvent:
+    def from_graph(cls, data: dict[str, Any], *, calendar_id: str = "primary") -> CalendarEvent:
         organizer = (data.get("organizer") or {}).get("emailAddress") or {}
         location = (data.get("location") or {}).get("displayName") or None
         online = data.get("onlineMeeting") or {}
@@ -121,6 +153,7 @@ class CalendarEvent(BaseModel):
             )
         return cls(
             id=data["id"],
+            calendar_id=calendar_id,
             subject=data.get("subject") or "(no subject)",
             start=parse_graph_datetime(data["start"]),
             end=parse_graph_datetime(data["end"]),
@@ -138,7 +171,9 @@ class CalendarEvent(BaseModel):
         )
 
     @classmethod
-    def from_google(cls, data: dict[str, Any], tz: Any = SGT) -> CalendarEvent:
+    def from_google(
+        cls, data: dict[str, Any], tz: Any = SGT, *, calendar_id: str = "primary"
+    ) -> CalendarEvent:
         organizer = data.get("organizer") or {}
         attendees: list[Attendee] = []
         for raw in data.get("attendees") or []:
@@ -162,6 +197,7 @@ class CalendarEvent(BaseModel):
         is_all_day = "date" in start_raw and "dateTime" not in start_raw
         return cls(
             id=data["id"],
+            calendar_id=calendar_id,
             subject=data.get("summary") or "(no subject)",
             start=parse_google_datetime(start_raw, tz),
             end=parse_google_datetime(end_raw, tz),
@@ -186,6 +222,8 @@ class EventSnapshot(BaseModel):
     """What an existing event looked like when a draft was prepared."""
 
     id: str
+    calendar_id: str = "primary"
+    calendar_name: str | None = None
     subject: str
     start: datetime
     end: datetime
@@ -197,13 +235,33 @@ class EventSnapshot(BaseModel):
     change_key: str | None = None
 
     @classmethod
-    def from_event(cls, event: CalendarEvent) -> EventSnapshot:
-        return cls(**event.model_dump(include=set(cls.model_fields)))
+    def from_event(cls, event: CalendarEvent, *, calendar_name: str | None = None) -> EventSnapshot:
+        data = event.model_dump(include=set(cls.model_fields) - {"calendar_name"})
+        return cls(**data, calendar_name=calendar_name)
+
+    @property
+    def calendar_label(self) -> str:
+        return _calendar_label(self.calendar_id, self.calendar_name)
+
+    @property
+    def calendar_info(self) -> CalendarInfo:
+        return CalendarInfo(
+            id=self.calendar_id,
+            name=self.calendar_name or self.calendar_id,
+            is_primary=self.calendar_id == "primary",
+            can_write=True,
+        )
 
     def matches(self, event: CalendarEvent) -> bool:
         if self.change_key and event.change_key:
             return self.change_key == event.change_key
         return self.subject == event.subject and self.start == event.start and self.end == event.end
+
+
+def _calendar_label(calendar_id: str, calendar_name: str | None) -> str:
+    if calendar_name and calendar_name != calendar_id:
+        return f"{calendar_name} ({calendar_id})"
+    return calendar_id
 
 
 def _require_aware(name: str, value: datetime | None) -> None:
@@ -222,7 +280,21 @@ class EventDraft(BaseModel):
     body: str | None = None
     attendees: list[Attendee] = Field(default_factory=list)
     send_invitations: bool = False
-    calendar_name: str = "primary"
+    calendar_id: str = "primary"
+    calendar_name: str | None = None
+
+    @property
+    def calendar_label(self) -> str:
+        return _calendar_label(self.calendar_id, self.calendar_name)
+
+    @property
+    def calendar_info(self) -> CalendarInfo:
+        return CalendarInfo(
+            id=self.calendar_id,
+            name=self.calendar_name or self.calendar_id,
+            is_primary=self.calendar_id == "primary",
+            can_write=True,
+        )
 
     @model_validator(mode="after")
     def _validate(self) -> EventDraft:

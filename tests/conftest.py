@@ -89,8 +89,8 @@ class FakeGraphClient:
         self._record("GET", path, params=dict(params or {}), headers=dict(headers or {}))
         if path == "/me":
             return self.me
-        if path.startswith("/me/events/"):
-            key = unquote(path.removeprefix("/me/events/"))
+        if "/events/" in path:
+            key = unquote(path.rsplit("/events/", 1)[1])
             if key not in self.events_by_id:
                 raise NotFoundError("Resource not found (404 ErrorItemNotFound)", status=404)
             return self.events_by_id[key]
@@ -98,7 +98,9 @@ class FakeGraphClient:
 
     def get_all(self, path: str, *, params=None, headers=None) -> list[dict[str, Any]]:
         self._record("GET", path, params=dict(params or {}), headers=dict(headers or {}))
-        assert path == "/me/calendarView", path
+        if path == "/me/calendars":
+            return [{"id": "cal-1", "name": "Calendar", "isDefaultCalendar": True, "canEdit": True}]
+        assert path.endswith("/calendarView"), path
         return list(self.calendar_view)
 
     def post(self, path: str, *, json: dict[str, Any], params=None, headers=None):
@@ -114,7 +116,7 @@ class FakeGraphClient:
 
     def patch(self, path: str, *, json: dict[str, Any], params=None, headers=None):
         self._record("PATCH", path, json=json, headers=dict(headers or {}))
-        current = dict(self.events_by_id[unquote(path.removeprefix("/me/events/"))])
+        current = dict(self.events_by_id[unquote(path.rsplit("/events/", 1)[1])])
         current.update(json)
         return current
 
@@ -164,16 +166,31 @@ class FakeGoogleClient:
     def _record(self, method: str, path: str, **kwargs: Any) -> None:
         self.calls.append(Call(method, path, **kwargs))
 
+    calendars: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "id": "me@example.com",
+                "summary": "me@example.com",
+                "primary": True,
+                "accessRole": "owner",
+            },
+            {"id": "work123@group.calendar.google.com", "summary": "Work", "accessRole": "writer"},
+            {"id": "fam456@group.calendar.google.com", "summary": "Family", "accessRole": "reader"},
+        ]
+    )
+
     def get(self, path: str, *, params=None, headers=None) -> dict[str, Any]:
         self._record("GET", path, params=dict(params or {}), headers=dict(headers or {}))
-        key = unquote(path.removeprefix("/calendars/primary/events/"))
+        key = unquote(path.rsplit("/events/", 1)[1])
         if key not in self.events_by_id:
             raise NotFoundError("Event not found (404 notFound)", status=404)
         return self.events_by_id[key]
 
     def get_all(self, path: str, *, params=None, headers=None) -> list[dict[str, Any]]:
         self._record("GET", path, params=dict(params or {}), headers=dict(headers or {}))
-        assert path == "/calendars/primary/events", path
+        if path == "/users/me/calendarList":
+            return list(self.calendars)
+        assert path.startswith("/calendars/") and path.endswith("/events"), path
         return list(self.events)
 
     def post(self, path: str, *, json: dict[str, Any], params=None, headers=None):
@@ -193,7 +210,7 @@ class FakeGoogleClient:
         self._record(
             "PATCH", path, json=json, params=dict(params or {}), headers=dict(headers or {})
         )
-        current = dict(self.events_by_id[unquote(path.removeprefix("/calendars/primary/events/"))])
+        current = dict(self.events_by_id[unquote(path.rsplit("/events/", 1)[1])])
         current.update(json)
         return current
 

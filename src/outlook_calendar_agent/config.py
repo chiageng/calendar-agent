@@ -27,9 +27,19 @@ GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3"
 GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
 GOOGLE_READ_SCOPE = "calendar.events.readonly"
 GOOGLE_WRITE_SCOPE = "calendar.events"
-GOOGLE_ALLOWED_SCOPES = frozenset({GOOGLE_READ_SCOPE, GOOGLE_WRITE_SCOPE, "calendar.readonly"})
+GOOGLE_LIST_SCOPE = "calendar.calendarlist.readonly"  # list calendars; always requested
+GOOGLE_TASKS_SCOPE = "tasks.readonly"  # optional: read Google Tasks (needs Tasks API enabled)
+GOOGLE_ALLOWED_SCOPES = frozenset(
+    {
+        GOOGLE_READ_SCOPE,
+        GOOGLE_WRITE_SCOPE,
+        "calendar.readonly",
+        GOOGLE_LIST_SCOPE,
+        GOOGLE_TASKS_SCOPE,
+    }
+)
 GOOGLE_IDENTITY_SCOPES: tuple[str, ...] = ("openid", "email")  # for whoami; always requested
-GOOGLE_DEFAULT_SCOPES: tuple[str, ...] = (GOOGLE_WRITE_SCOPE,)
+GOOGLE_DEFAULT_SCOPES: tuple[str, ...] = (GOOGLE_WRITE_SCOPE, GOOGLE_TASKS_SCOPE)
 _GOOGLE_CLIENT_ID_RE = re.compile(r"^[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com$")
 
 # ---- Microsoft --------------------------------------------------------------------------------
@@ -54,11 +64,16 @@ class GoogleSettings:
 
     @property
     def full_scopes(self) -> tuple[str, ...]:
-        return GOOGLE_IDENTITY_SCOPES + tuple(GOOGLE_SCOPE_PREFIX + s for s in self.scopes)
+        calendar_scopes = tuple(dict.fromkeys((*self.scopes, GOOGLE_LIST_SCOPE)))
+        return GOOGLE_IDENTITY_SCOPES + tuple(GOOGLE_SCOPE_PREFIX + s for s in calendar_scopes)
 
     @property
     def can_write(self) -> bool:
         return GOOGLE_WRITE_SCOPE in self.scopes
+
+    @property
+    def wants_tasks(self) -> bool:
+        return GOOGLE_TASKS_SCOPE in self.scopes
 
 
 @dataclass(frozen=True)

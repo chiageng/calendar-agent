@@ -1,7 +1,7 @@
 [project]
 name = "outlook-calendar-agent"
 version = "0.1.0"
-description = "Local CLI agent for Outlook / Microsoft 365 calendars via Microsoft Graph (delegated, device-code auth)"
+description = "Local CLI agent for Google Calendar (or Outlook via Microsoft Graph) with a draft + explicit-yes confirmation gate"
 readme = "README.md"
 authors = [
     { name = "chiageng", email = "chiageng12@gmail.com" }

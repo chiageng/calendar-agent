@@ -35,6 +35,7 @@ class WriteSummary:
     subject: str
     start: datetime
     end: datetime
+    calendar_id: str = "primary"
 
 
 def ensure_write_allowed(rt: Runtime) -> None:
@@ -99,12 +100,13 @@ def resolve_event(
     find: str | None,
     on: str | None,
     days: int,
+    calendar_id: str = "primary",
 ) -> CalendarEvent:
     """Resolve exactly one event, or raise with a list of candidates."""
     if event_id and find:
         raise AgentError("Pass either --event-id or --find, not both.")
     if event_id:
-        return rt.calendar.get_event(event_id)
+        return rt.calendar.get_event(event_id, calendar_id=calendar_id)
     if not find:
         raise AgentError(
             "Choose an event with --event-id <ID> or --find <text> [--on <date> | --days N]."
@@ -119,7 +121,7 @@ def resolve_event(
     except ValueError as exc:
         raise AgentError(str(exc)) from exc
 
-    matches = rt.calendar.search_events(window_start, window_end, find)
+    matches = rt.calendar.search_events(window_start, window_end, find, calendar_id=calendar_id)
     if not matches:
         raise AgentError(
             f"No events matching {find!r} between {window_start:%Y-%m-%d} and "
@@ -128,7 +130,7 @@ def resolve_event(
         )
     if len(matches) > 1:
         raise AmbiguousEventError(format_event_choices(matches, rt.tz))
-    return rt.calendar.get_event(matches[0].id)
+    return rt.calendar.get_event(matches[0].id, calendar_id=calendar_id)
 
 
 def build_update_draft(
@@ -141,6 +143,7 @@ def build_update_draft(
     duration_minutes: int | None,
     location: str | None,
     notify_attendees: bool,
+    calendar_name: str | None = None,
 ) -> UpdateDraft:
     ensure_single_instance(event, verb="update")
     ensure_organizer(event)
@@ -163,7 +166,7 @@ def build_update_draft(
         new_end = new_start + (event.end - event.start)  # keep the original duration
     try:
         return UpdateDraft(
-            original=EventSnapshot.from_event(event),
+            original=EventSnapshot.from_event(event, calendar_name=calendar_name),
             subject=subject,
             start=new_start,
             end=new_end,
@@ -174,7 +177,13 @@ def build_update_draft(
         raise AgentError(_first_pydantic_message(exc)) from exc
 
 
-def build_delete_draft(rt: Runtime, event: CalendarEvent, *, notify_attendees: bool) -> DeleteDraft:
+def build_delete_draft(
+    rt: Runtime,
+    event: CalendarEvent,
+    *,
+    notify_attendees: bool,
+    calendar_name: str | None = None,
+) -> DeleteDraft:
     ensure_single_instance(event, verb="delete")
     check_notification_policy(
         rt,
@@ -182,12 +191,15 @@ def build_delete_draft(rt: Runtime, event: CalendarEvent, *, notify_attendees: b
         acknowledged=notify_attendees,
         flag="--notify-attendees",
     )
-    return DeleteDraft(original=EventSnapshot.from_event(event), notify_attendees=notify_attendees)
+    return DeleteDraft(
+        original=EventSnapshot.from_event(event, calendar_name=calendar_name),
+        notify_attendees=notify_attendees,
+    )
 
 
 def verify_unchanged(rt: Runtime, snapshot: EventSnapshot) -> CalendarEvent:
     """Re-read the target event and refuse to proceed if it changed since the draft."""
-    current = rt.calendar.get_event(snapshot.id)
+    current = rt.calendar.get_event(snapshot.id, calendar_id=snapshot.calendar_id)
     if not snapshot.matches(current):
         raise StaleDraftError(
             f"Event {snapshot.id!r} changed since the draft was prepared.",
@@ -197,7 +209,9 @@ def verify_unchanged(rt: Runtime, snapshot: EventSnapshot) -> CalendarEvent:
 
 
 def summary_for_create(draft: EventDraft) -> WriteSummary:
-    return WriteSummary("create", None, draft.subject, draft.start, draft.end)
+    return WriteSummary(
+        "create", None, draft.subject, draft.start, draft.end, calendar_id=draft.calendar_id
+    )
 
 
 def summary_for_update(draft: UpdateDraft) -> WriteSummary:
@@ -207,12 +221,13 @@ def summary_for_update(draft: UpdateDraft) -> WriteSummary:
         draft.subject or draft.original.subject,
         draft.effective_start,
         draft.effective_end,
+        calendar_id=draft.original.calendar_id,
     )
 
 
 def summary_for_delete(draft: DeleteDraft) -> WriteSummary:
     o = draft.original
-    return WriteSummary("delete", o.id, o.subject, o.start, o.end)
+    return WriteSummary("delete", o.id, o.subject, o.start, o.end, calendar_id=o.calendar_id)
 
 
 def confirm_and_execute[T](
@@ -233,6 +248,7 @@ def confirm_and_execute[T](
         "subject": summary.subject,
         "start": summary.start,
         "end": summary.end,
+        "extra": {"calendar_id": summary.calendar_id},
     }
     if not ask_confirmation(prompt, reader=reader):
         rt.audit.record(action=summary.action, stage="rejected", **fields)

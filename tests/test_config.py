@@ -33,12 +33,14 @@ def test_google_is_default_provider(tmp_path: Path) -> None:
     settings = load_settings(_google_env(tmp_path))
     assert settings.provider == "google"
     assert settings.google is not None and settings.microsoft is None
-    assert settings.scopes == ("calendar.events",)
-    assert settings.can_write
+    assert settings.scopes == ("calendar.events", "tasks.readonly")
+    assert settings.can_write and settings.google.wants_tasks
     assert settings.google.full_scopes == (
         "openid",
         "email",
         "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/tasks.readonly",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
     )
     assert settings.token_cache_path.name == "google_token.json"
     assert settings.timezone_name == "Asia/Singapore"
@@ -48,6 +50,7 @@ def test_google_is_default_provider(tmp_path: Path) -> None:
 def test_google_read_only_and_scope_validation(tmp_path: Path) -> None:
     ro = load_settings(_google_env(tmp_path, GOOGLE_SCOPES="calendar.events.readonly"))
     assert not ro.can_write and "GOOGLE_SCOPES=calendar.events" in ro.write_scope_hint
+    assert not ro.google.wants_tasks
     full = load_settings(
         _google_env(tmp_path, GOOGLE_SCOPES="https://www.googleapis.com/auth/calendar.events")
     )

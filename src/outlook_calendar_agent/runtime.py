@@ -14,6 +14,7 @@ from .audit import AuditLog
 from .backend import CalendarBackend
 from .config import Settings, load_settings
 from .drafts import DraftStore
+from .google_tasks import GoogleTasksService
 
 
 class Authenticator(Protocol):
@@ -35,6 +36,7 @@ class Runtime:
     calendar: CalendarBackend
     audit: AuditLog
     drafts: DraftStore
+    tasks: GoogleTasksService | None = None
 
     @property
     def tz(self) -> ZoneInfo:
@@ -45,16 +47,21 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
     settings = settings or load_settings()
     auth: Authenticator
     calendar: CalendarBackend
+    tasks: GoogleTasksService | None = None
     if settings.provider == "google":
         from .google_auth import GoogleAuthenticator
         from .google_calendar import GoogleCalendarService
         from .google_client import GoogleClient
+        from .google_tasks import GOOGLE_TASKS_BASE_URL
 
         assert settings.google is not None
         google_auth = GoogleAuthenticator(settings.google, settings.token_cache_path)
         client = GoogleClient(google_auth.acquire_token, base_url=settings.google.base_url)
         auth = google_auth
         calendar = GoogleCalendarService(client, google_auth, settings.timezone)
+        if settings.google.wants_tasks:
+            tasks_client = GoogleClient(google_auth.acquire_token, base_url=GOOGLE_TASKS_BASE_URL)
+            tasks = GoogleTasksService(tasks_client, settings.timezone)
     else:
         from .graph_auth import Authenticator as GraphAuthenticator
         from .graph_calendar import GraphCalendarService
@@ -71,6 +78,7 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         calendar=calendar,
         audit=AuditLog(settings.audit_log_path),
         drafts=DraftStore(settings.drafts_dir),
+        tasks=tasks,
     )
 
 

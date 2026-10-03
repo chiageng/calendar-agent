@@ -6,11 +6,16 @@ from abc import ABC, abstractmethod
 from datetime import datetime, tzinfo
 from typing import Any
 
-from .models import CalendarEvent, DeleteDraft, EventDraft, UpdateDraft
+from .models import CalendarEvent, CalendarInfo, DeleteDraft, EventDraft, UpdateDraft
+
+PRIMARY = "primary"
 
 
 class CalendarBackend(ABC):
-    """What the CLI needs from a calendar provider. Writes assume confirmation already happened."""
+    """What the CLI needs from a calendar provider. Writes assume confirmation already happened.
+
+    ``calendar_id`` is ``"primary"`` for the account's main calendar or a provider calendar ID.
+    """
 
     #: Human-readable provider name used in messages.
     name: str = "calendar"
@@ -27,29 +32,50 @@ class CalendarBackend(ABC):
     # -- reads -----------------------------------------------------------------------
     @abstractmethod
     def get_me(self) -> dict[str, Any]:
-        """Return at least ``displayName`` and ``mail`` for the signed-in account."""
+        """Return at least ``displayName`` and the account address for the signed-in user."""
 
     @abstractmethod
-    def list_events(self, start: datetime, end: datetime) -> list[CalendarEvent]:
-        """Time-bounded query of the primary calendar, sorted by start."""
+    def list_calendars(self) -> list[CalendarInfo]:
+        """All calendars the account can see."""
+
+    def list_calendars_cached(self) -> list[CalendarInfo]:
+        """``list_calendars`` memoised for the lifetime of this (short-lived) CLI process."""
+        cached = getattr(self, "_calendars_cache", None)
+        if cached is None:
+            cached = self.list_calendars()
+            self._calendars_cache = cached
+        return list(cached)
 
     @abstractmethod
-    def get_event(self, event_id: str) -> CalendarEvent: ...
+    def list_events(
+        self, start: datetime, end: datetime, *, calendar_id: str = PRIMARY
+    ) -> list[CalendarEvent]:
+        """Time-bounded query of one calendar, sorted by start."""
 
-    def search_events(self, start: datetime, end: datetime, text: str) -> list[CalendarEvent]:
+    @abstractmethod
+    def get_event(self, event_id: str, *, calendar_id: str = PRIMARY) -> CalendarEvent: ...
+
+    def search_events(
+        self, start: datetime, end: datetime, text: str, *, calendar_id: str = PRIMARY
+    ) -> list[CalendarEvent]:
         needle = text.strip().lower()
         return [
             e
-            for e in self.list_events(start, end)
+            for e in self.list_events(start, end, calendar_id=calendar_id)
             if needle in e.subject.lower() and not e.is_cancelled
         ]
 
     def find_conflicts(
-        self, start: datetime, end: datetime, *, exclude_id: str | None = None
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        exclude_id: str | None = None,
+        calendar_id: str = PRIMARY,
     ) -> list[CalendarEvent]:
         return [
             e
-            for e in self.list_events(start, end)
+            for e in self.list_events(start, end, calendar_id=calendar_id)
             if e.overlaps(start, end) and not e.is_cancelled and e.id != exclude_id
         ]
 

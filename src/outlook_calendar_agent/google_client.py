@@ -79,16 +79,19 @@ class GoogleClient(JsonApiClient):
                 hint="Wait a moment and retry.",
             )
         if status == 403 and reason in {"accessNotConfigured", "SERVICE_DISABLED"}:
+            api = "Google Tasks API" if "tasks" in message.lower() else "Google Calendar API"
             return PermissionDeniedError(
-                f"The Google Calendar API is not enabled for this project ({detail}).",
-                hint="Google Cloud console → APIs & Services → Library → Google Calendar API "
-                "→ Enable, then retry.",
+                f"The {api} is not enabled for this Cloud project ({detail}).",
+                hint=f"Google Cloud console → APIs & Services → Library → {api} → Enable, "
+                "wait a minute, then retry.",
             )
         if status == 403:
             return PermissionDeniedError(
                 f"Google denied the request ({detail}).",
-                hint="The granted scope is insufficient. Reads need calendar.events.readonly; "
-                "writes need calendar.events. Update GOOGLE_SCOPES and run 'login' again.",
+                hint="Either the calendar is read-only for your account, or the granted scope "
+                "is insufficient (reads need calendar.events.readonly, writes need "
+                "calendar.events). Check 'calendars', then run 'login' again if GOOGLE_SCOPES "
+                "changed.",
             )
         if status in {404, 410}:
             return NotFoundError(

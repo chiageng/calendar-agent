@@ -6,7 +6,15 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, tzinfo
 from typing import Any
 
-from .models import Attendee, CalendarEvent, DeleteDraft, EventDraft, UpdateDraft
+from .models import (
+    Attendee,
+    CalendarEvent,
+    CalendarInfo,
+    DeleteDraft,
+    EventDraft,
+    TaskItem,
+    UpdateDraft,
+)
 from .timeutil import SGT, format_dt, zone_name
 
 _NONE = "(none)"
@@ -38,13 +46,50 @@ def format_event_line(event: CalendarEvent, tz: tzinfo = SGT) -> str:
     return f"  {when}  {' | '.join(parts)}"
 
 
+def format_tasks(
+    tasks: Sequence[TaskItem], start: datetime, end: datetime, tz: tzinfo = SGT
+) -> str:
+    header = (
+        f"Tasks due {start.astimezone(tz):%Y-%m-%d} to {end.astimezone(tz):%Y-%m-%d}"
+        " (Google Tasks; dates only)"
+    )
+    if not tasks:
+        return f"{header}\n(no tasks)"
+    lines = [header]
+    current = None
+    for task in tasks:
+        label = task.due.isoformat() if task.due else "no due date"
+        if label != current:
+            lines.append(label)
+            current = label
+        mark = "[x]" if task.completed else "[ ]"
+        extra = "" if task.in_default_list else f" | {task.list_name}"
+        lines.append(f"  {mark} {task.title}{extra}")
+    return "\n".join(lines)
+
+
+def format_calendars(calendars: Sequence[CalendarInfo]) -> str:
+    if not calendars:
+        return "No calendars visible."
+    return "\n".join(c.display() for c in calendars)
+
+
 def format_event_list(
-    events: Sequence[CalendarEvent], start: datetime, end: datetime, tz: tzinfo = SGT
+    events: Sequence[CalendarEvent],
+    start: datetime,
+    end: datetime,
+    tz: tzinfo = SGT,
+    *,
+    calendar_id: str = "primary",
+    calendar_name: str | None = None,
 ) -> str:
     header = (
         f"Events {start.astimezone(tz):%Y-%m-%d %H:%M} to {end.astimezone(tz):%Y-%m-%d %H:%M}"
         f" — {zone_name(tz)}"
     )
+    if calendar_id != "primary":
+        label = f"{calendar_name} ({calendar_id})" if calendar_name else calendar_id
+        header += f"\nCalendar: {label}"
     if not events:
         return f"{header}\n(no events)"
     lines = [header]
@@ -90,7 +135,7 @@ def format_conflicts(conflicts: Sequence[CalendarEvent], tz: tzinfo = SGT) -> st
     if not conflicts:
         return "Conflicts: none in the proposed window."
     lines = [f"Conflicts: {len(conflicts)} existing event(s) overlap the proposed time:"]
-    lines += [format_event_line(e, tz) for e in conflicts]
+    lines += [f"{format_event_line(e, tz)}  [calendar: {e.calendar_id}]" for e in conflicts]
     return "\n".join(lines)
 
 
@@ -101,7 +146,7 @@ def format_create_preview(draft: EventDraft, tz: tzinfo = SGT) -> str:
         ("Subject", draft.subject),
         ("Start", format_dt(draft.start, tz)),
         ("End", format_dt(draft.end, tz)),
-        ("Calendar", draft.calendar_name),
+        ("Calendar", draft.calendar_label),
         ("Location", draft.location or _NONE),
         ("Meeting link", "(none — Meet/Teams links are not created by this tool)"),
         ("Attendees", _attendees(draft.attendees)),
@@ -139,7 +184,7 @@ def format_update_preview(draft: UpdateDraft, tz: tzinfo = SGT) -> str:
             format_dt(original.end, tz),
             format_dt(draft.effective_end, tz) if "end" in changed else None,
         ),
-        ("Calendar", "primary"),
+        ("Calendar", original.calendar_label),
         change(
             "Location",
             original.location or _NONE,
@@ -164,7 +209,7 @@ def format_delete_preview(draft: DeleteDraft, tz: tzinfo = SGT) -> str:
         ("Subject", original.subject),
         ("Start", format_dt(original.start, tz)),
         ("End", format_dt(original.end, tz)),
-        ("Calendar", "primary"),
+        ("Calendar", original.calendar_label),
         ("Location", original.location or _NONE),
         ("Meeting link", original.online_join_url or _NONE),
         ("Attendees", _attendees(original.attendees)),
