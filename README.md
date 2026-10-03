@@ -67,7 +67,15 @@ uv run outlook-calendar whoami
 uv run outlook-calendar events --days 7  # today + next 6 days, Asia/Singapore
 uv run outlook-calendar events --from 2026-10-05T00:00:00 --to 2026-10-12T00:00:00
 uv run outlook-calendar logout           # revokes the token (best effort) and deletes the token file
+uv run outlook-calendar calendars        # list every calendar you can see, with IDs
+uv run outlook-calendar events --days 7 --calendar "Work"   # any calendar by name or ID
 ```
+
+Every command that targets events (`events`, `draft-create`, `create`, `draft-update`,
+`draft-delete`) accepts `--calendar <name or ID>`; the default is your primary calendar. A draft
+remembers its calendar, so `update`/`delete` act on the right one. The agent always requests the
+read-only `calendar.calendarlist.readonly` scope in addition to `GOOGLE_SCOPES` so it can resolve
+calendar names.
 
 Example output:
 
@@ -161,7 +169,8 @@ uses PKCE, checks `state`, stores the token file with mode 600 and never prints 
 ## 5. Security model
 
 - The agent acts only as the account you sign in with. OAuth scopes are the minimum needed:
-  `calendar.events` (or `calendar.events.readonly`) plus `openid email` for `whoami`.
+  `calendar.events` (or `calendar.events.readonly`), `calendar.calendarlist.readonly` to list
+  calendars, plus `openid email` for `whoami`.
 - Least privilege via `GOOGLE_SCOPES`; a read-only configuration makes every write command exit
   with a configuration error before any network call.
 - Token file, drafts and audit log are owner-only files outside the repository. `.gitignore`

@@ -92,6 +92,31 @@ def parse_event_times(
     return start, end
 
 
+def resolve_calendar(rt: Runtime, text: str | None) -> str:
+    """Map ``--calendar`` input (exact ID, or a unique calendar name) to a calendar ID."""
+    if not text or text.strip().lower() == "primary":
+        return "primary"
+    wanted = text.strip()
+    calendars = rt.calendar.list_calendars()
+    for cal in calendars:
+        if cal.id == wanted:
+            return cal.id
+    matches = [c for c in calendars if c.name.lower() == wanted.lower()]
+    if not matches:
+        matches = [c for c in calendars if wanted.lower() in c.name.lower()]
+    if len(matches) == 1:
+        return matches[0].id
+    listing = "\n".join(f"  {c.display()}" for c in calendars) or "  (none visible)"
+    if not matches:
+        raise AgentError(
+            f"No calendar named {wanted!r}.", hint=f"Calendars you can see:\n{listing}"
+        )
+    raise AmbiguousEventError(
+        f"Several calendars match {wanted!r}; pass the exact id:\n"
+        + "\n".join(f"  {c.display()}" for c in matches)
+    )
+
+
 def resolve_event(
     rt: Runtime,
     *,
@@ -99,12 +124,13 @@ def resolve_event(
     find: str | None,
     on: str | None,
     days: int,
+    calendar_id: str = "primary",
 ) -> CalendarEvent:
     """Resolve exactly one event, or raise with a list of candidates."""
     if event_id and find:
         raise AgentError("Pass either --event-id or --find, not both.")
     if event_id:
-        return rt.calendar.get_event(event_id)
+        return rt.calendar.get_event(event_id, calendar_id=calendar_id)
     if not find:
         raise AgentError(
             "Choose an event with --event-id <ID> or --find <text> [--on <date> | --days N]."
@@ -119,7 +145,7 @@ def resolve_event(
     except ValueError as exc:
         raise AgentError(str(exc)) from exc
 
-    matches = rt.calendar.search_events(window_start, window_end, find)
+    matches = rt.calendar.search_events(window_start, window_end, find, calendar_id=calendar_id)
     if not matches:
         raise AgentError(
             f"No events matching {find!r} between {window_start:%Y-%m-%d} and "
@@ -128,7 +154,7 @@ def resolve_event(
         )
     if len(matches) > 1:
         raise AmbiguousEventError(format_event_choices(matches, rt.tz))
-    return rt.calendar.get_event(matches[0].id)
+    return rt.calendar.get_event(matches[0].id, calendar_id=calendar_id)
 
 
 def build_update_draft(
@@ -187,7 +213,7 @@ def build_delete_draft(rt: Runtime, event: CalendarEvent, *, notify_attendees: b
 
 def verify_unchanged(rt: Runtime, snapshot: EventSnapshot) -> CalendarEvent:
     """Re-read the target event and refuse to proceed if it changed since the draft."""
-    current = rt.calendar.get_event(snapshot.id)
+    current = rt.calendar.get_event(snapshot.id, calendar_id=snapshot.calendar_id)
     if not snapshot.matches(current):
         raise StaleDraftError(
             f"Event {snapshot.id!r} changed since the draft was prepared.",

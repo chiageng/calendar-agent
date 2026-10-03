@@ -12,7 +12,7 @@ import typer
 
 from . import __version__, runtime
 from .errors import AgentError
-from .formatting import format_event_list, format_signed_in
+from .formatting import format_calendars, format_event_list, format_signed_in
 from .timeutil import DATETIME_HELP, format_dt, parse_user_datetime, start_of_day
 
 # pretty_exceptions_show_locals=False matters: a rich traceback could otherwise dump
@@ -146,10 +146,17 @@ def events(
     to: Annotated[
         str | None, typer.Option("--to", help="Range end (exclusive). Defaults to --from + --days.")
     ] = None,
+    calendar: Annotated[
+        str | None,
+        typer.Option("--calendar", help="Calendar name or ID (default: primary). See 'calendars'."),
+    ] = None,
 ) -> None:
-    """List events in a bounded time window of the primary calendar."""
+    """List events in a bounded time window of one calendar (default: primary)."""
+    from .write_flow import resolve_calendar
+
     rt = runtime.get_runtime()
     tz = rt.tz
+    calendar_id = resolve_calendar(rt, calendar)
     try:
         if from_:
             start = parse_user_datetime(from_, tz=tz)
@@ -165,7 +172,16 @@ def events(
         raise AgentError("--to must be after --from.")
     if end - start > timedelta(days=90):
         raise AgentError("The window may not exceed 90 days; narrow the range.")
-    echo(format_event_list(rt.calendar.list_events(start, end), start, end, tz))
+    events_found = rt.calendar.list_events(start, end, calendar_id=calendar_id)
+    echo(format_event_list(events_found, start, end, tz, calendar_id=calendar_id))
+
+
+@app.command()
+@handle_errors
+def calendars() -> None:
+    """List the calendars this account can see, with the IDs usable in --calendar."""
+    rt = runtime.get_runtime()
+    echo(format_calendars(rt.calendar.list_calendars()))
 
 
 @app.command()

@@ -44,7 +44,7 @@ class FakeSession:
                 "refresh_token": "RT-1",
                 "expires_in": 3600,
                 "id_token": _id_token("me@example.com"),
-                "scope": "openid email https://www.googleapis.com/auth/calendar.events",
+                "scope": "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly",
             },
         )
 

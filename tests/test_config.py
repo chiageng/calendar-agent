@@ -39,6 +39,7 @@ def test_google_is_default_provider(tmp_path: Path) -> None:
         "openid",
         "email",
         "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
     )
     assert settings.token_cache_path.name == "google_token.json"
     assert settings.timezone_name == "Asia/Singapore"

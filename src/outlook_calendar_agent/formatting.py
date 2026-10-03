@@ -6,7 +6,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, tzinfo
 from typing import Any
 
-from .models import Attendee, CalendarEvent, DeleteDraft, EventDraft, UpdateDraft
+from .models import Attendee, CalendarEvent, CalendarInfo, DeleteDraft, EventDraft, UpdateDraft
 from .timeutil import SGT, format_dt, zone_name
 
 _NONE = "(none)"
@@ -38,13 +38,26 @@ def format_event_line(event: CalendarEvent, tz: tzinfo = SGT) -> str:
     return f"  {when}  {' | '.join(parts)}"
 
 
+def format_calendars(calendars: Sequence[CalendarInfo]) -> str:
+    if not calendars:
+        return "No calendars visible."
+    return "\n".join(c.display() for c in calendars)
+
+
 def format_event_list(
-    events: Sequence[CalendarEvent], start: datetime, end: datetime, tz: tzinfo = SGT
+    events: Sequence[CalendarEvent],
+    start: datetime,
+    end: datetime,
+    tz: tzinfo = SGT,
+    *,
+    calendar_id: str = "primary",
 ) -> str:
     header = (
         f"Events {start.astimezone(tz):%Y-%m-%d %H:%M} to {end.astimezone(tz):%Y-%m-%d %H:%M}"
         f" — {zone_name(tz)}"
     )
+    if calendar_id != "primary":
+        header += f"\nCalendar: {calendar_id}"
     if not events:
         return f"{header}\n(no events)"
     lines = [header]
@@ -101,7 +114,7 @@ def format_create_preview(draft: EventDraft, tz: tzinfo = SGT) -> str:
         ("Subject", draft.subject),
         ("Start", format_dt(draft.start, tz)),
         ("End", format_dt(draft.end, tz)),
-        ("Calendar", draft.calendar_name),
+        ("Calendar", draft.calendar_id),
         ("Location", draft.location or _NONE),
         ("Meeting link", "(none — Meet/Teams links are not created by this tool)"),
         ("Attendees", _attendees(draft.attendees)),
@@ -139,7 +152,7 @@ def format_update_preview(draft: UpdateDraft, tz: tzinfo = SGT) -> str:
             format_dt(original.end, tz),
             format_dt(draft.effective_end, tz) if "end" in changed else None,
         ),
-        ("Calendar", "primary"),
+        ("Calendar", original.calendar_id),
         change(
             "Location",
             original.location or _NONE,
@@ -164,7 +177,7 @@ def format_delete_preview(draft: DeleteDraft, tz: tzinfo = SGT) -> str:
         ("Subject", original.subject),
         ("Start", format_dt(original.start, tz)),
         ("End", format_dt(original.end, tz)),
-        ("Calendar", "primary"),
+        ("Calendar", original.calendar_id),
         ("Location", original.location or _NONE),
         ("Meeting link", original.online_join_url or _NONE),
         ("Attendees", _attendees(original.attendees)),
