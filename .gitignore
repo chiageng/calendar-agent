@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# Secrets and local configuration — never commit
+.env
+.env.*
+!.env.example
+
+# Tokens, drafts, audit logs and calendar exports (private meeting details)
+token_cache*.json
+*.jsonl
+drafts/
+*.ics
+exports/
+*.log
