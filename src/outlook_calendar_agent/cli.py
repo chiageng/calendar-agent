@@ -13,8 +13,14 @@ import typer
 from . import __version__, runtime
 from .calendars import resolve_calendar
 from .errors import AgentError
-from .formatting import format_calendars, format_event_list, format_signed_in, format_tasks
-from .timeutil import DATETIME_HELP, format_dt, parse_user_datetime, start_of_day
+from .formatting import (
+    format_calendars,
+    format_draft_line,
+    format_event_list,
+    format_signed_in,
+    format_tasks,
+)
+from .timeutil import DATETIME_HELP, parse_user_datetime, start_of_day
 
 # pretty_exceptions_show_locals=False matters: a rich traceback could otherwise dump
 # local variables, which may include an access token.
@@ -235,14 +241,16 @@ def drafts() -> None:
         echo("No saved drafts.")
         return
     for draft in saved:
-        payload = draft.payload
-        if payload.kind == "create":
-            detail = f"{payload.subject}  {format_dt(payload.start, rt.tz)}"
-        elif payload.kind == "update":
-            detail = f"{payload.original.subject}  {format_dt(payload.effective_start, rt.tz)}"
-        else:
-            detail = f"{payload.original.subject}  {format_dt(payload.original.start, rt.tz)}"
-        echo(f"{draft.id}  {draft.kind:<6}  {detail}")
+        echo(format_draft_line(draft.id, draft.payload, rt.tz))
+
+
+@app.command()
+@handle_errors
+def mcp() -> None:
+    """Run the MCP (Model Context Protocol) server over stdio for a supervisor agent."""
+    from .mcp_server import main as mcp_main
+
+    mcp_main()
 
 
 def main() -> None:

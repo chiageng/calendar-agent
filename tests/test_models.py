@@ -40,6 +40,8 @@ def test_create_payload_is_minimal_and_in_singapore_time() -> None:
         "start": {"dateTime": "2026-10-07T14:00:00", "timeZone": "Asia/Singapore"},
         "end": {"dateTime": "2026-10-07T14:45:00", "timeZone": "Asia/Singapore"},
         "location": {"displayName": "Room 4"},
+        "isReminderOn": True,
+        "reminderMinutesBeforeStart": 1440,
     }
     # Deferred features must never be set implicitly.
     for forbidden in ("isOnlineMeeting", "onlineMeetingProvider", "recurrence", "organizer"):
@@ -77,8 +79,9 @@ def test_google_payload_is_minimal_and_in_singapore_time() -> None:
         "end": {"dateTime": "2026-10-07T14:45:00+08:00", "timeZone": "Asia/Singapore"},
         "location": "Room 4",
         "description": "b",
+        "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 1440}]},
     }
-    for forbidden in ("conferenceData", "recurrence", "organizer", "reminders"):
+    for forbidden in ("conferenceData", "recurrence", "organizer"):
         assert forbidden not in payload
 
 
@@ -139,3 +142,16 @@ def test_draft_roundtrip_json() -> None:
     restored = Draft.model_validate_json(draft.model_dump_json())
     assert restored.kind == "delete"
     assert restored.payload.original.start == datetime(2026, 10, 7, 14, 0, tzinfo=SGT)
+
+
+def test_links_and_with_link_edge_cases() -> None:
+    from outlook_calendar_agent.models import extract_links, with_link
+
+    assert extract_links("Join at https://zoom.us/j/5, dial-in below.") == ["https://zoom.us/j/5"]
+    html = "<p>Agenda</p><p>Meeting link: https://a/b</p>"
+    assert (
+        with_link(html, "https://c/d", html=True)
+        == "<p>Agenda</p>\n<p>Meeting link: https://c/d</p>"
+    )
+    assert with_link("notes\nMeeting link: https://a/b", None) == "notes"
+    assert with_link(None, "https://x/y") == "Meeting link: https://x/y"

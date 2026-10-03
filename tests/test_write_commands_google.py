@@ -55,7 +55,7 @@ def test_attendees_without_flag_are_allowed_but_labelled_silent(grt, google: Fak
     assert google.write_calls == []
 
 
-@pytest.mark.parametrize("answer", ["no\n", "Yes\n", "YES\n", "y\n", "", "\n"])
+@pytest.mark.parametrize("answer", ["no\n", "ok\n", "yes please\n", "y\n", "", "\n"])
 def test_google_create_never_posts_without_exact_yes(grt, google, google_audit_entries, answer):
     draft_id = _draft_id(runner.invoke(app, ["draft-create", *CREATE_ARGS]).output)
     result = runner.invoke(app, ["create", "--draft", draft_id], input=answer)
@@ -98,7 +98,7 @@ def test_google_update_and_delete_gates(grt, google: FakeGoogleClient):
     assert dele.exit_code == 0, dele.output
     assert "Cancellations sent : YES" in dele.output
     del_id = _draft_id(dele.output)
-    assert runner.invoke(app, ["delete", "--draft", del_id], input="YES\n").exit_code == 10
+    assert runner.invoke(app, ["delete", "--draft", del_id], input="sure\n").exit_code == 10
     assert len(google.write_calls) == 1
     done = runner.invoke(app, ["delete", "--draft", del_id], input="yes\n")
     assert done.exit_code == 0, done.output

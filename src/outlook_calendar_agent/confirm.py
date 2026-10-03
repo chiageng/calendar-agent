@@ -1,4 +1,4 @@
-"""Explicit confirmation gate. Only the exact word ``yes`` authorises a mutation."""
+"""Explicit confirmation gate. Only the single word ``yes`` (any case) authorises a mutation."""
 
 from __future__ import annotations
 
@@ -8,10 +8,15 @@ CONFIRMATION_WORD = "yes"
 
 
 def is_exact_confirmation(response: str | None) -> bool:
-    """True only for ``yes`` (surrounding whitespace ignored, case-sensitive)."""
+    """True only for the single word ``yes``.
+
+    Case-insensitive and tolerant of surrounding whitespace and a trailing full stop or
+    exclamation mark, because phone keyboards capitalise the first letter. Everything else
+    ("y", "ok", "yes please", "yes but ...") is rejected.
+    """
     if response is None:
         return False
-    return response.strip() == CONFIRMATION_WORD
+    return response.strip().rstrip(".!").strip().lower() == CONFIRMATION_WORD
 
 
 def ask_confirmation(prompt: str, *, reader: Callable[[str], str] = input) -> bool:

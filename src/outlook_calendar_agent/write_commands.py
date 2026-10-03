@@ -19,7 +19,7 @@ from .formatting import (
     format_delete_preview,
     format_update_preview,
 )
-from .models import Attendee, Draft, EventDraft
+from .models import Draft, EventDraft
 from .runtime import Runtime
 from .timeutil import DATETIME_HELP, format_dt
 from .write_flow import (
@@ -28,6 +28,8 @@ from .write_flow import (
     check_notification_policy,
     confirm_and_execute,
     ensure_write_allowed,
+    first_pydantic_message,
+    parse_attendees,
     parse_event_times,
     resolve_event,
     summary_for_create,
@@ -98,23 +100,6 @@ def _handle(func):  # type: ignore[no-untyped-def]
 
 
 # ---- helpers ------------------------------------------------------------------------------
-def _parse_attendees(required: list[str] | None, optional: list[str] | None) -> list[Attendee]:
-    attendees: list[Attendee] = []
-    try:
-        attendees += [Attendee.parse(a, type="required") for a in required or []]
-        attendees += [Attendee.parse(a, type="optional") for a in optional or []]
-    except ValueError as exc:
-        raise AgentError(f"Invalid attendee: {exc}") from exc
-    seen: set[str] = set()
-    unique: list[Attendee] = []
-    for attendee in attendees:
-        key = attendee.email.lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(attendee)
-    return unique
-
-
 def _build_create_draft(
     rt: Runtime,
     *,
@@ -134,7 +119,7 @@ def _build_create_draft(
     start_dt, end_dt = parse_event_times(
         rt, start_text=start, end_text=end, duration_minutes=duration
     )
-    attendees = _parse_attendees(attendee, optional_attendee)
+    attendees = parse_attendees(attendee, optional_attendee)
     check_notification_policy(
         rt, has_attendees=bool(attendees), acknowledged=send_invitations, flag="--send-invitations"
     )
@@ -152,9 +137,7 @@ def _build_create_draft(
             calendar_name=target.name,
         )
     except ValueError as exc:
-        from .write_flow import _first_pydantic_message
-
-        raise AgentError(_first_pydantic_message(exc)) from exc
+        raise AgentError(first_pydantic_message(exc)) from exc
 
 
 def _show_create(rt: Runtime, draft: EventDraft, *, check_conflicts: bool) -> None:

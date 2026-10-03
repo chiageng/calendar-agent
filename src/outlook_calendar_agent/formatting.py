@@ -7,6 +7,7 @@ from datetime import datetime, tzinfo
 from typing import Any
 
 from .models import (
+    REMINDER_OFF,
     Attendee,
     CalendarEvent,
     CalendarInfo,
@@ -43,7 +44,10 @@ def format_event_line(event: CalendarEvent, tz: tzinfo = SGT) -> str:
         parts.append(event.organizer_email)
     if event.event_type and event.event_type != "singleInstance":
         parts.append("recurring")
-    return f"  {when}  {' | '.join(parts)}"
+    line = f"  {when}  {' | '.join(parts)}"
+    if event.links:
+        line += f"\n           🔗 {event.links[0]}"
+    return line
 
 
 def format_tasks(
@@ -66,6 +70,20 @@ def format_tasks(
         extra = "" if task.in_default_list else f" | {task.list_name}"
         lines.append(f"  {mark} {task.title}{extra}")
     return "\n".join(lines)
+
+
+def format_draft_line(draft_id: str, payload: object, tz: tzinfo = SGT) -> str:
+    """One line per saved draft, shared by the CLI `drafts` command and the MCP server."""
+    if isinstance(payload, EventDraft):
+        detail = f"{payload.subject}  {format_dt(payload.start, tz)}"
+    elif isinstance(payload, UpdateDraft):
+        detail = f"{payload.original.subject}  {format_dt(payload.effective_start, tz)}"
+    elif isinstance(payload, DeleteDraft):
+        detail = f"{payload.original.subject}  {format_dt(payload.original.start, tz)}"
+    else:  # pragma: no cover - the discriminated union prevents this
+        detail = "(unknown draft)"
+    kind = getattr(payload, "kind", "?")
+    return f"{draft_id}  {kind:<6}  {detail}"
 
 
 def format_calendars(calendars: Sequence[CalendarInfo]) -> str:
@@ -124,6 +142,26 @@ def _notification_status(has_attendees: bool, acknowledged: bool) -> str:
     return "no (attendees are changed on the event without an e-mail)"
 
 
+def _first_link(snapshot: object) -> str:
+    """The meeting link of a snapshot/event, or the placeholder."""
+    links = getattr(snapshot, "links", None) or []
+    return links[0] if links else _NONE
+
+
+def _reminder_text(minutes: int | None) -> str:
+    if minutes is None:
+        return "calendar default"
+    if minutes == REMINDER_OFF:
+        return "none"
+    if minutes % (24 * 60) == 0:
+        days = minutes // (24 * 60)
+        return f"{days} day{'s' if days != 1 else ''} before"
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} hour{'s' if hours != 1 else ''} before"
+    return f"{minutes} minutes before"
+
+
 def _block(title: str, rows: list[tuple[str, str]]) -> str:
     width = max(len(label) for label, _ in rows)
     lines = [title, "-" * len(title)]
@@ -148,13 +186,14 @@ def format_create_preview(draft: EventDraft, tz: tzinfo = SGT) -> str:
         ("End", format_dt(draft.end, tz)),
         ("Calendar", draft.calendar_label),
         ("Location", draft.location or _NONE),
-        ("Meeting link", "(none — Meet/Teams links are not created by this tool)"),
+        ("Meeting link", draft.link or "(none — Meet/Teams links are not created by this tool)"),
+        ("Reminder", _reminder_text(draft.reminder_minutes_before)),
         ("Attendees", _attendees(draft.attendees)),
         ("Invitations sent", _notification_status(bool(draft.attendees), draft.send_invitations)),
         ("Recurrence", "none (single event)"),
     ]
     if draft.body:
-        rows.append(("Body", draft.body))
+        rows.append(("Notes", draft.body))
     return _block("PROPOSED CHANGE", rows)
 
 
@@ -190,7 +229,16 @@ def format_update_preview(draft: UpdateDraft, tz: tzinfo = SGT) -> str:
             original.location or _NONE,
             draft.location if "location" in changed else None,
         ),
-        ("Meeting link", original.online_join_url or _NONE),
+        change(
+            "Meeting link",
+            _first_link(original),
+            (draft.link or _NONE) if "link" in changed else None,
+        ),
+        change(
+            "Reminder",
+            _reminder_text(original.reminder_minutes_before),
+            _reminder_text(draft.effective_reminder) if "reminder" in changed else None,
+        ),
         ("Attendees", _attendees(original.attendees)),
         (
             "Update notices sent",
@@ -211,7 +259,7 @@ def format_delete_preview(draft: DeleteDraft, tz: tzinfo = SGT) -> str:
         ("End", format_dt(original.end, tz)),
         ("Calendar", original.calendar_label),
         ("Location", original.location or _NONE),
-        ("Meeting link", original.online_join_url or _NONE),
+        ("Meeting link", _first_link(original)),
         ("Attendees", _attendees(original.attendees)),
         (
             "Cancellations sent",

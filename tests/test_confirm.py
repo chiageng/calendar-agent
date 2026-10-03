@@ -3,13 +3,13 @@ import pytest
 from outlook_calendar_agent.confirm import ask_confirmation, is_exact_confirmation
 
 
-@pytest.mark.parametrize("answer", ["yes", "yes\n", "  yes  "])
-def test_exact_yes_is_accepted(answer):
+@pytest.mark.parametrize("answer", ["yes", "yes\n", "  yes  ", "Yes", "YES", "yes.", "Yes!"])
+def test_single_word_yes_in_any_case_is_accepted(answer):
     assert is_exact_confirmation(answer)
 
 
 @pytest.mark.parametrize(
-    "answer", ["Yes", "YES", "y", "yes.", "yes please", "", None, "no", "ye s"]
+    "answer", ["y", "yes please", "yes but later", "", None, "no", "ye s", "yesyes", "ok", "sure"]
 )
 def test_everything_else_is_rejected(answer):
     assert not is_exact_confirmation(answer)
@@ -29,5 +29,7 @@ def test_prompt_is_passed_to_reader():
         seen.append(prompt)
         return "yes"
 
-    assert ask_confirmation("Create this event? Type exactly yes to continue: ", reader=reader)
-    assert seen == ["Create this event? Type exactly yes to continue: "]
+    assert ask_confirmation(
+        "Create this event? Type yes to continue (anything else cancels): ", reader=reader
+    )
+    assert seen == ["Create this event? Type yes to continue (anything else cancels): "]

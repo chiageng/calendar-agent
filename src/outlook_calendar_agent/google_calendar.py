@@ -16,7 +16,7 @@ PAGE_SIZE = 250
 # Keep responses small: only the fields CalendarEvent.from_google reads.
 EVENT_FIELDS = (
     "id,summary,start,end,location,organizer,status,attendees(email,displayName,optional,"
-    "organizer),recurringEventId,recurrence,hangoutLink,htmlLink,etag"
+    "organizer),recurringEventId,recurrence,hangoutLink,htmlLink,etag,description,reminders"
 )
 LIST_FIELDS = f"nextPageToken,items({EVENT_FIELDS})"
 CALENDAR_LIST_FIELDS = "nextPageToken,items(id,summary,summaryOverride,primary,accessRole)"

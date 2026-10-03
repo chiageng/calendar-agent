@@ -3,7 +3,7 @@
 A small, local, terminal-first agent for your calendar on Ubuntu. It talks to the
 **Google Calendar API** directly (or to Microsoft Graph for Outlook, if you choose that
 provider), signs in with **OAuth 2.0 as you**, and treats every calendar write as a *proposal*
-that must be confirmed by typing exactly `yes`.
+that must be confirmed by typing the single word `yes` (any capitalisation).
 
 All times are displayed in **Asia/Singapore**. Reads are time-bounded queries of the primary
 calendar. No desktop apps, no browser automation, no web server, no database.
@@ -112,7 +112,7 @@ uv run outlook-calendar draft-create \
   --location "Room 4" --attendee "Alice Tan <alice@example.com>" --send-invitations
 # → prints the full preview and "Draft saved as d-1a2b3c"
 
-# Step 2: re-print the preview and ask "Create this event? Type exactly yes to continue:"
+# Step 2: re-print the preview and ask "Create this event? Type yes to continue (anything else cancels):"
 uv run outlook-calendar create --draft d-1a2b3c
 ```
 
@@ -129,7 +129,7 @@ Rules enforced by the tool:
 uv run outlook-calendar draft-update --find "project review" --on tomorrow --start 2026-10-07T16:00
 #   If several events match, the tool lists them with IDs and exits; re-run with --event-id.
 #   Moving --start without --end keeps the original duration.
-uv run outlook-calendar update --draft d-9f8e7d      # prompts: Update this event? Type exactly yes...
+uv run outlook-calendar update --draft d-9f8e7d      # prompts: Update this event? Type yes to continue...
 ```
 
 - `--notify-attendees` e-mails existing attendees about the change; otherwise it is silent.
@@ -144,7 +144,7 @@ uv run outlook-calendar update --draft d-9f8e7d      # prompts: Update this even
 uv run outlook-calendar draft-delete --event-id abc123def456 [--notify-attendees]
 uv run outlook-calendar delete --draft d-5c4b3a
 # prints the preview, then a PERMANENT DELETE block with Event ID, Subject, Start and End (Asia/Singapore)
-# and asks: Delete this event permanently? Type exactly yes to continue:
+# and asks: Delete this event permanently? Type yes to continue (anything else cancels):
 ```
 
 Recurring series and their instances are never deleted by this tool.
@@ -161,6 +161,20 @@ Each audit line records `action` (create/update/delete), `stage`
 (proposed/confirmed/rejected/succeeded/failed), draft ID, event ID, subject, start and end.
 Tokens and credentials are never written; the logger rejects any key that looks like one.
 
+## 3b. Using the agent from a supervisor (MCP)
+
+`uv run outlook-calendar mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio so
+another agent (the Telegram supervisor in `supervisor-agent`) can call the calendar as tools:
+`now`, `list_calendars`, `list_events`, `find_free_slots`, `list_tasks`, `draft_create_event`,
+`draft_update_event`, `draft_delete_event`, `list_drafts`, `confirm_draft`, `discard_draft`.
+
+- Date and time arguments are the user's own phrases ("next Tuesday 2pm", "5 Oct to 9 Oct") and
+  are resolved deterministically by `dates.py`; vague phrases come back as `QUESTION: ...`.
+- `draft_*` tools never write. They return the preview and a draft id.
+- `confirm_draft(draft_id, user_reply)` applies the draft only when `user_reply` is the single word `yes`
+  and discards it otherwise, so the confirmation gate is enforced in this repo, not in any LLM.
+- Errors come back as `ERROR: ...` text so the calling model can relay them.
+
 ## 4. Development
 
 ```bash
@@ -171,7 +185,7 @@ uv run ruff format --check .
 
 Tests use recording fake API clients for both providers. They prove, among other things, that
 `create`, `update` and `delete` make **zero** POST/PATCH/DELETE calls for any answer other than
-exactly `yes` (including `Yes`, `YES`, `y`, empty input and EOF), and that the Google sign-in
+the single word `yes` (including `y`, `ok`, `yes please`, empty input and EOF), and that the Google sign-in
 uses PKCE, checks `state`, stores the token file with mode 600 and never prints a token.
 
 ## 5. Security model
@@ -185,7 +199,7 @@ uses PKCE, checks `state`, stores the token file with mode 600 and never prints 
   excludes `.env`, token files, JSONL logs, drafts and calendar exports.
 - Tokens are never printed or logged. Typer's pretty tracebacks (which can dump local variables)
   are disabled. The loopback HTTP handler does not log request lines (they carry the code).
-- Every mutation prints a structured preview and requires the exact word `yes`.
+- Every mutation prints a structured preview and requires the single word `yes` (any capitalisation).
 - Conflict checks are bounded `events.list` reads over the proposed window.
 - Exit codes: 1 generic, 2 config, 3 auth, 4 permission, 5 API, 6 network, 8 ambiguous event,
   9 unsupported operation, 10 not confirmed, 11 stale draft.

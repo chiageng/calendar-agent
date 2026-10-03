@@ -19,7 +19,7 @@ from .errors import (
     UserCancelledError,
 )
 from .formatting import format_event_choices
-from .models import CalendarEvent, DeleteDraft, EventDraft, EventSnapshot, UpdateDraft
+from .models import Attendee, CalendarEvent, DeleteDraft, EventDraft, EventSnapshot, UpdateDraft
 from .runtime import Runtime
 from .timeutil import parse_user_datetime, start_of_day
 
@@ -101,8 +101,12 @@ def resolve_event(
     on: str | None,
     days: int,
     calendar_id: str = "primary",
+    window: tuple[datetime, datetime] | None = None,
 ) -> CalendarEvent:
-    """Resolve exactly one event, or raise with a list of candidates."""
+    """Resolve exactly one event, or raise with a list of candidates.
+
+    ``window`` (start, end) overrides ``on``/``days`` when the caller already resolved a range.
+    """
     if event_id and find:
         raise AgentError("Pass either --event-id or --find, not both.")
     if event_id:
@@ -112,7 +116,9 @@ def resolve_event(
             "Choose an event with --event-id <ID> or --find <text> [--on <date> | --days N]."
         )
     try:
-        if on:
+        if window is not None:
+            window_start, window_end = window
+        elif on:
             window_start = start_of_day(parse_user_datetime(on, tz=rt.tz), rt.tz)
             window_end = window_start + timedelta(days=1)
         else:
@@ -144,6 +150,9 @@ def build_update_draft(
     location: str | None,
     notify_attendees: bool,
     calendar_name: str | None = None,
+    link: str | None = None,
+    reminder_minutes_before: int | None = None,
+    use_default_reminder: bool = False,
 ) -> UpdateDraft:
     ensure_single_instance(event, verb="update")
     ensure_organizer(event)
@@ -171,6 +180,9 @@ def build_update_draft(
             start=new_start,
             end=new_end,
             location=location,
+            link=link,
+            reminder_minutes_before=reminder_minutes_before,
+            use_default_reminder=use_default_reminder,
             notify_attendees=notify_attendees,
         )
     except ValueError as exc:
@@ -241,7 +253,7 @@ def confirm_and_execute[T](
     reader: Callable[[str], str] = input,
 ) -> T:
     """Ask for the exact confirmation word, audit the decision and only then call ``perform``."""
-    prompt = f"{question} Type exactly {CONFIRMATION_WORD} to continue: "
+    prompt = f"{question} Type {CONFIRMATION_WORD} to continue (anything else cancels): "
     fields = {
         "draft_id": draft_id,
         "event_id": summary.event_id,
@@ -264,6 +276,34 @@ def confirm_and_execute[T](
         fields["event_id"] = result.id
     rt.audit.record(action=summary.action, stage="succeeded", **fields)
     return result
+
+
+def parse_attendees(
+    required: list[str] | None, optional: list[str] | None = None
+) -> list[Attendee]:
+    """Parse 'email' / 'Name <email>' strings, de-duplicated case-insensitively by address."""
+    attendees: list[Attendee] = []
+    try:
+        attendees += [Attendee.parse(a, type="required") for a in required or []]
+        attendees += [Attendee.parse(a, type="optional") for a in optional or []]
+    except ValueError as exc:
+        raise AgentError(
+            f"Invalid attendee: {exc}. Attendees must be e-mail addresses; names cannot be "
+            "looked up."
+        ) from exc
+    seen: set[str] = set()
+    unique: list[Attendee] = []
+    for attendee in attendees:
+        key = attendee.email.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(attendee)
+    return unique
+
+
+def first_pydantic_message(exc: ValueError) -> str:
+    """The first human-readable message out of a pydantic ValidationError (or any ValueError)."""
+    return _first_pydantic_message(exc)
 
 
 def _first_pydantic_message(exc: ValueError) -> str:
