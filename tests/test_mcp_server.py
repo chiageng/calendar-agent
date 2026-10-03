@@ -68,7 +68,9 @@ def test_ambiguity_and_errors_are_returned_not_raised(server) -> None:
     out = _text(_call(server, "draft_create_event", subject="X", when="tomorrow morning"))
     assert out.startswith("QUESTION:") and "specific time" in out
     out = _text(_call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00"))
-    assert out.startswith("QUESTION:") and "How long" in out  # no duration given: ask, never guess
+    # no length given: a labelled 1 hour default, never a silent guess
+    assert "End              : 2026-10-07 20:00" in out
+    assert 'Duration         : 1 hour (default; reply e.g. "make it 2 hours" to change)' in out
     out = _text(
         _call(server, "draft_create_event", subject="Dinner", when="2026-10-07T19:00", end="9pm")
     )
@@ -279,3 +281,45 @@ def test_reminder_tri_state(server, google: FakeGoogleClient) -> None:
         )
     )
     assert "Reminder" in upd and "calendar default" in upd or "ERROR" in upd
+
+
+def test_subject_and_location_are_cleaned(server, google: FakeGoogleClient) -> None:
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Another meeting Shaw centre",
+            when="2026-10-07T16:00",
+            end="6pm",
+        )
+    )
+    assert "Subject          : Meeting" in out
+    assert "Location         : Shaw Centre" in out
+    assert (
+        "Duration         : 2 hours" in out
+        and "default" not in out.split("Duration")[1].splitlines()[0]
+    )
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Monday lunch 12pm shaw centre",
+            when="2026-10-07T12:00",
+        )
+    )
+    assert "Subject          : Lunch" in out and "Location         : Shaw Centre" in out
+
+
+def test_past_start_asks_which_day(server, monkeypatch) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from outlook_calendar_agent import agent_api
+
+    monkeypatch.setattr(
+        agent_api,
+        "_now",
+        lambda rt: datetime(2026, 10, 3, 18, 0, tzinfo=ZoneInfo("Asia/Singapore")),
+    )
+    out = _text(_call(server, "draft_create_event", subject="Meeting", when="4pm", end="6pm"))
+    assert out.startswith("QUESTION:") and "already passed" in out

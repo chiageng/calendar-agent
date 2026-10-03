@@ -34,6 +34,7 @@ from .models import (
 )
 from .runtime import Runtime
 from .timeutil import format_dt
+from .titles import clean_subject_and_location
 from .write_flow import (
     build_delete_draft,
     build_update_draft,
@@ -49,6 +50,7 @@ from .write_flow import (
     verify_unchanged,
 )
 
+DEFAULT_EVENT_MINUTES = 60  # used, and labelled in the preview, when the user gives no length
 QUESTION = "QUESTION: "
 ERROR = "ERROR: "
 
@@ -201,18 +203,22 @@ def draft_create_event_text(
     def run() -> str:
         ensure_write_allowed(rt)
         now = _now(rt)
+        title, place = clean_subject_and_location(subject, location)
         start_dt = resolve_moment(when, now=now, tz=rt.tz)
+        if start_dt < now - timedelta(minutes=1):
+            raise DateAmbiguity(
+                f"{start_dt:%A %d %b at %H:%M} has already passed. Which day do you mean for "
+                f"'{title}'?"
+            )
         # a time-only end ("3pm") lands on the start's day, not today
         end_dt = (
             resolve_moment(end, now=now, tz=rt.tz, default_day=start_dt.date()) if end else None
         )
+        defaulted = False
         if end_dt is None:
-            if not duration_minutes:
-                raise DateAmbiguity(
-                    f"How long should '{subject.strip()}' on {start_dt:%A %d %b at %H:%M} be? "
-                    "For example 30 minutes, 1 hour, or until 5pm."
-                )
-            end_dt = start_dt + timedelta(minutes=duration_minutes)
+            minutes = duration_minutes or DEFAULT_EVENT_MINUTES
+            defaulted = not duration_minutes
+            end_dt = start_dt + timedelta(minutes=minutes)
         if end_dt <= start_dt:
             raise AgentError("The end time must be after the start time.")
         people = parse_attendees(attendees)
@@ -222,10 +228,11 @@ def draft_create_event_text(
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
         try:
             draft = EventDraft(
-                subject=subject.strip(),
+                subject=title,
                 start=start_dt,
                 end=end_dt,
-                location=location or None,
+                location=place,
+                duration_defaulted=defaulted,
                 attendees=people,
                 send_invitations=send_invitations,
                 calendar_id=target.id,
