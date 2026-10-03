@@ -8,6 +8,7 @@ raises for expected conditions: ambiguities come back as ``QUESTION: ...``, erro
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 
@@ -51,6 +52,8 @@ from .write_flow import (
 )
 
 DEFAULT_EVENT_MINUTES = 60  # used, and labelled in the preview, when the user gives no length
+MAX_EVENT_MINUTES = 7 * 24 * 60
+PAST_START_GRACE = timedelta(minutes=15)  # "now" and "a few minutes ago" are fine
 QUESTION = "QUESTION: "
 ERROR = "ERROR: "
 
@@ -204,18 +207,28 @@ def draft_create_event_text(
         ensure_write_allowed(rt)
         now = _now(rt)
         title, place = clean_subject_and_location(subject, location)
-        start_dt = resolve_moment(when, now=now, tz=rt.tz)
-        if start_dt < now - timedelta(minutes=1):
-            raise DateAmbiguity(
-                f"{start_dt:%A %d %b at %H:%M} has already passed. Which day do you mean for "
-                f"'{title}'?"
-            )
+        if not title:
+            raise AgentError("An event needs a title. What should it be called?")
+        _check_duration(duration_minutes)
+        start_dt = resolve_moment(when, now=now, tz=rt.tz).astimezone(rt.tz)
+        past_note = ""
+        if start_dt < now - PAST_START_GRACE:
+            # A bare time ("4pm" said at 6pm) lands on today; the user most likely means the
+            # next occurrence, so ask. A day the user named explicitly is taken as given.
+            tomorrow = start_dt.date() + timedelta(days=1)
+            if resolve_moment(when, now=now, tz=rt.tz, default_day=tomorrow) != start_dt:
+                raise DateAmbiguity(
+                    f"{start_dt:%H:%M} today has already passed. Do you mean tomorrow "
+                    f"({tomorrow:%A %d %b}) for '{title}'?"
+                )
+            past_note = "\nNote: this start time is in the past."
         # a time-only end ("3pm") lands on the start's day, not today
         end_dt = (
             resolve_moment(end, now=now, tz=rt.tz, default_day=start_dt.date()) if end else None
         )
         defaulted = False
         if end_dt is None:
+            # 0 is what a small model sends for "not given": same labelled default as omitting it
             minutes = duration_minutes or DEFAULT_EVENT_MINUTES
             defaulted = not duration_minutes
             end_dt = start_dt + timedelta(minutes=minutes)
@@ -255,10 +268,120 @@ def draft_create_event_text(
             extra={"calendar_id": s.calendar_id, "via": "mcp"},
         )
         return _saved(
-            rt, saved.id, format_create_preview(draft, rt.tz), format_conflicts(conflicts, rt.tz)
+            rt,
+            saved.id,
+            format_create_preview(draft, rt.tz),
+            format_conflicts(conflicts, rt.tz) + past_note,
         )
 
     return _guard(run)
+
+
+_DRAFT_ID_RE = re.compile(r"d-[0-9a-f]{6}")
+
+
+def _reject_draft_id(event_id: str) -> None:
+    """A model that wants to drop a waiting draft sometimes passes its id as an event id."""
+    if _DRAFT_ID_RE.fullmatch(event_id.strip()):
+        raise AgentError(
+            f"{event_id} is a draft that is still waiting, not an event on the calendar. "
+            "Call discard_draft to drop it."
+        )
+
+
+def _check_duration(minutes: int | None) -> None:
+    if minutes is not None and not 0 <= minutes <= MAX_EVENT_MINUTES:
+        raise AgentError(
+            f"duration_minutes must be between 1 and {MAX_EVENT_MINUTES}; "
+            "for longer events give an end instead."
+        )
+
+
+def _amend_waiting_draft(
+    rt: Runtime,
+    draft_id: str,
+    *,
+    now: datetime,
+    new_when: str,
+    new_duration_minutes: int | None,
+    new_end: str,
+    new_subject: str,
+    new_location: str,
+    new_link: str | None,
+    new_reminder_minutes_before: int | None,
+) -> str:
+    """Replace a waiting create-draft with a changed copy ("make it 2 hours").
+
+    Nothing is written to the calendar: the old draft is discarded (and audited as such) and
+    the copy is a new draft that needs its own confirmation.
+    """
+    old = rt.drafts.load(draft_id)
+    payload = old.payload
+    if not isinstance(payload, EventDraft):
+        raise AgentError(
+            f"{draft_id} is a waiting {old.kind} draft. To change it, call discard_draft for it "
+            "and draft it again."
+        )
+    _check_duration(new_duration_minutes)
+    start = payload.start.astimezone(rt.tz)
+    length = payload.end - payload.start
+    defaulted = payload.duration_defaulted
+    if new_when:
+        # a time-only phrase ("3pm") stays on the draft's own day
+        moment = resolve_moment(new_when, now=now, tz=rt.tz, default_day=start.date())
+        start = moment.astimezone(rt.tz)
+    end = start + length
+    if new_end:
+        end = resolve_moment(new_end, now=now, tz=rt.tz, default_day=start.date())
+        defaulted = False
+    elif new_duration_minutes:
+        end = start + timedelta(minutes=new_duration_minutes)
+        defaulted = False
+    if end <= start:
+        raise AgentError("The end time must be after the start time.")
+    title, place = payload.subject, payload.location
+    if new_subject or new_location:
+        title, place = clean_subject_and_location(
+            new_subject or payload.subject, new_location or payload.location
+        )
+    changes: dict[str, object] = {
+        "subject": title,
+        "location": place,
+        "start": start,
+        "end": end,
+        "duration_defaulted": defaulted,
+    }
+    if new_link is not None:
+        changes["link"] = new_link or None
+    if new_reminder_minutes_before is not None:
+        changes["reminder_minutes_before"] = _reminder_arg(new_reminder_minutes_before)
+    try:
+        draft = EventDraft(**{**payload.model_dump(), **changes})
+    except ValueError as exc:
+        raise AgentError(first_pydantic_message(exc)) from exc
+    target = resolve_calendar(rt.calendar, draft.calendar_id, for_write=True)
+    conflicts = find_conflicts_everywhere(rt.calendar, draft.start, draft.end, target=target)
+    saved = rt.drafts.save(draft)
+    rt.drafts.discard(draft_id)
+    rt.audit.record(
+        action="create", stage="rejected", draft_id=draft_id, detail=f"replaced by {saved.id}"
+    )
+    summary = summary_for_create(draft)
+    rt.audit.record(
+        action="create",
+        stage="proposed",
+        draft_id=saved.id,
+        subject=summary.subject,
+        start=summary.start,
+        end=summary.end,
+        extra={"calendar_id": summary.calendar_id, "via": "mcp", "replaces": draft_id},
+    )
+    return (
+        _saved(
+            rt, saved.id, format_create_preview(draft, rt.tz), format_conflicts(conflicts, rt.tz)
+        )
+        + f"\nReplaces draft {draft_id}, which was discarded."
+    )
 
 
 def draft_update_event_text(
@@ -279,6 +402,19 @@ def draft_update_event_text(
     def run() -> str:
         ensure_write_allowed(rt)
         now = _now(rt)
+        if _DRAFT_ID_RE.fullmatch(event_id.strip()):
+            return _amend_waiting_draft(
+                rt,
+                event_id.strip(),
+                now=now,
+                new_when=new_when,
+                new_duration_minutes=new_duration_minutes,
+                new_end=new_end,
+                new_subject=new_subject,
+                new_location=new_location,
+                new_link=new_link,
+                new_reminder_minutes_before=new_reminder_minutes_before,
+            )
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
         event = resolve_event(
             rt,
@@ -360,6 +496,7 @@ def draft_delete_event_text(
 ) -> str:
     def run() -> str:
         ensure_write_allowed(rt)
+        _reject_draft_id(event_id)
         now = _now(rt)
         target = resolve_calendar(rt.calendar, calendar, for_write=True)
         event = resolve_event(

@@ -323,3 +323,95 @@ def test_past_start_asks_which_day(server, monkeypatch) -> None:
     )
     out = _text(_call(server, "draft_create_event", subject="Meeting", when="4pm", end="6pm"))
     assert out.startswith("QUESTION:") and "already passed" in out
+
+
+def _at(monkeypatch, *args) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from outlook_calendar_agent import agent_api
+
+    moment = datetime(*args, tzinfo=ZoneInfo("Asia/Singapore"))
+    monkeypatch.setattr(agent_api, "_now", lambda rt: moment)
+
+
+def test_past_time_without_day_offers_tomorrow(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 23, 50)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="12:30am"))
+    assert out.startswith("QUESTION:") and "tomorrow (Sunday 04 Oct)" in out
+
+
+def test_explicit_past_day_is_drafted_with_a_note(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Gym", when="yesterday 3pm"))
+    assert "Draft saved as" in out and "2026-10-02" in out
+    assert "Note: this start time is in the past." in out
+
+
+def test_start_a_few_minutes_ago_is_fine(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="5:57pm"))
+    assert "Draft saved as" in out and "in the past" not in out
+
+
+def test_past_question_uses_local_time(server, monkeypatch) -> None:
+    _at(monkeypatch, 2026, 10, 3, 18, 0)
+    out = _text(_call(server, "draft_create_event", subject="Call", when="2026-10-03T08:30:00Z"))
+    # 08:30Z is 16:30 in Singapore: an explicit moment, so it is drafted and shown in local time
+    assert "Draft saved as" in out and "16:30" in out and "in the past" in out
+
+
+def test_duration_bounds_and_empty_title(server) -> None:
+    when = "2026-10-07T12:00"
+    out = _text(_call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=-5))
+    assert out.startswith("ERROR:") and "duration_minutes" in out
+    out = _text(
+        _call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=100000)
+    )
+    assert out.startswith("ERROR:") and "duration_minutes" in out
+    # 0 means "not given": the labelled default applies
+    out = _text(_call(server, "draft_create_event", subject="Sync", when=when, duration_minutes=0))
+    assert "1 hour (default" in out
+    out = _text(_call(server, "draft_create_event", subject="  ", when=when))
+    assert out.startswith("ERROR:") and "title" in out
+
+
+def _draft_id(out: str) -> str:
+    return out.split("Draft saved as ")[1].split(".")[0]
+
+
+def test_a_waiting_draft_can_be_amended_through_update(server) -> None:
+    first = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Dinner",
+            when="2026-10-09T19:00",
+            location="MBS",
+        )
+    )
+    old_id = _draft_id(first)
+    out = _text(_call(server, "draft_update_event", event_id=old_id, new_duration_minutes=120))
+    new_id = _draft_id(out)
+    assert new_id != old_id and f"Replaces draft {old_id}" in out
+    assert "Action           : CREATE event" in out  # still a create, nothing on the calendar
+    assert "Subject          : Dinner" in out and "Location         : MBS" in out
+    assert "2026-10-09 19:00" in out and "2026-10-09 21:00" in out
+    assert "Duration         : 2 hours" in out and "default" not in out.split("Duration")[1][:40]
+    listing = _text(_call(server, "list_drafts"))
+    assert new_id in listing and old_id not in listing
+
+    # a time-only move stays on the draft's day and keeps the new length
+    moved = _text(_call(server, "draft_update_event", event_id=new_id, new_when="6pm"))
+    assert "2026-10-09 18:00" in moved and "2026-10-09 20:00" in moved
+
+    # the old draft can no longer be confirmed
+    gone = _text(_call(server, "confirm_draft", draft_id=old_id, user_reply="yes"))
+    assert gone.startswith("ERROR:") and "not found" in gone
+
+
+def test_amending_an_unknown_draft_or_deleting_by_draft_id_fails(server) -> None:
+    out = _text(_call(server, "draft_update_event", event_id="d-000000", new_when="6pm"))
+    assert out.startswith("ERROR:") and "not found" in out
+    out = _text(_call(server, "draft_delete_event", event_id="d-70da7c"))
+    assert out.startswith("ERROR:") and "discard_draft" in out

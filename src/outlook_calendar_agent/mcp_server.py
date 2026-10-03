@@ -136,6 +136,8 @@ def build_server(rt_factory=runtime.get_runtime) -> MCPServer:  # type: ignore[n
         description=(
             "Prepare a draft that moves/renames/relocates an EXISTING event (does not apply it). "
             "Identify the event with 'find' (subject text) plus 'on' (day phrase), or event_id. "
+            "To change a draft that is still waiting (for example 'make it 2 hours'), pass its "
+            "draft id (d-xxxxxx) as event_id with only the changed fields. "
             "new_when = new start phrase (duration kept unless new_duration_minutes/new_end). "
             "new_link = a meeting URL to attach ('' removes it). new_reminder_minutes_before "
             "sets the reminder: minutes, 0 = none, -1 = calendar default. notify_attendees=true "
