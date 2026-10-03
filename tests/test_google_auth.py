@@ -212,3 +212,22 @@ def test_login_refuses_token_without_calendar_scope(tmp_path: Path) -> None:
     with pytest.raises(PermissionDeniedError, match="unticked"):
         auth.complete_login(f"http://127.0.0.1:8765/?state={state}&code=AUTH")
     assert not (tmp_path / "state" / "google_token.json").exists()
+
+
+def test_cached_token_missing_new_scope_asks_for_relogin(tmp_path: Path) -> None:
+    session = FakeSession()
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "google_token.json").write_text(
+        json.dumps(
+            {
+                "access_token": "AT",
+                "refresh_token": "RT",
+                "expires_at": 9e12,
+                "scope": "openid email https://www.googleapis.com/auth/calendar.events",
+            }
+        )
+    )
+    with pytest.raises(AuthError, match="predates") as info:
+        _auth(tmp_path, session).acquire_token()
+    assert "login" in (info.value.hint or "")
+    assert session.posts == []

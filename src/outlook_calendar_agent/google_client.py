@@ -87,8 +87,10 @@ class GoogleClient(JsonApiClient):
         if status == 403:
             return PermissionDeniedError(
                 f"Google denied the request ({detail}).",
-                hint="The granted scope is insufficient. Reads need calendar.events.readonly; "
-                "writes need calendar.events. Update GOOGLE_SCOPES and run 'login' again.",
+                hint="Either the calendar is read-only for your account, or the granted scope "
+                "is insufficient (reads need calendar.events.readonly, writes need "
+                "calendar.events). Check 'calendars', then run 'login' again if GOOGLE_SCOPES "
+                "changed.",
             )
         if status in {404, 410}:
             return NotFoundError(

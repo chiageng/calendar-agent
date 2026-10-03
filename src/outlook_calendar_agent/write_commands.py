@@ -11,6 +11,7 @@ from typing import Annotated
 import typer
 
 from . import runtime
+from .calendars import find_conflicts_everywhere, resolve_calendar
 from .errors import AgentError
 from .formatting import (
     format_conflicts,
@@ -18,7 +19,7 @@ from .formatting import (
     format_delete_preview,
     format_update_preview,
 )
-from .models import Attendee, Draft, EventDraft
+from .models import Attendee, CalendarInfo, Draft, EventDraft
 from .runtime import Runtime
 from .timeutil import DATETIME_HELP, format_dt
 from .write_flow import (
@@ -28,7 +29,6 @@ from .write_flow import (
     confirm_and_execute,
     ensure_write_allowed,
     parse_event_times,
-    resolve_calendar,
     resolve_event,
     summary_for_create,
     summary_for_delete,
@@ -127,7 +127,7 @@ def _build_create_draft(
     attendee: list[str] | None,
     optional_attendee: list[str] | None,
     send_invitations: bool,
-    calendar_id: str = "primary",
+    calendar: str | None = None,
 ) -> EventDraft:
     if not subject or not start:
         raise AgentError("--subject and --start are required (or pass --draft <ID>).")
@@ -138,6 +138,7 @@ def _build_create_draft(
     check_notification_policy(
         rt, has_attendees=bool(attendees), acknowledged=send_invitations, flag="--send-invitations"
     )
+    target = resolve_calendar(rt.calendar, calendar, for_write=True)  # network: after validation
     try:
         return EventDraft(
             subject=subject.strip(),
@@ -147,7 +148,8 @@ def _build_create_draft(
             body=body,
             attendees=attendees,
             send_invitations=send_invitations,
-            calendar_id=calendar_id,
+            calendar_id=target.id,
+            calendar_name=target.name,
         )
     except ValueError as exc:
         from .write_flow import _first_pydantic_message
@@ -158,9 +160,8 @@ def _build_create_draft(
 def _show_create(rt: Runtime, draft: EventDraft, *, check_conflicts: bool) -> None:
     _echo(format_create_preview(draft, rt.tz))
     if check_conflicts:
-        conflicts = rt.calendar.find_conflicts(
-            draft.start, draft.end, calendar_id=draft.calendar_id
-        )
+        target = CalendarInfo(id=draft.calendar_id, name=draft.calendar_name or draft.calendar_id)
+        conflicts = find_conflicts_everywhere(rt.calendar, draft.start, draft.end, target=target)
         _echo(format_conflicts(conflicts, rt.tz))
     else:
         _echo("Conflicts: not checked (--no-conflict-check).")
@@ -221,7 +222,7 @@ def draft_create(
         attendee=attendee,
         optional_attendee=optional_attendee,
         send_invitations=send_invitations,
-        calendar_id=resolve_calendar(rt, calendar),
+        calendar=calendar,
     )
     _show_create(rt, draft, check_conflicts=not no_conflict_check)
     saved = rt.drafts.save(draft)
@@ -275,7 +276,7 @@ def create(
             attendee=attendee,
             optional_attendee=optional_attendee,
             send_invitations=send_invitations,
-            calendar_id=resolve_calendar(rt, calendar),
+            calendar=calendar,
         )
     s = summary_for_create(draft)
     if not draft_id:
@@ -315,14 +316,8 @@ def draft_update(
 ) -> None:
     """Resolve one event, prepare changes, check conflicts and save a draft. No write occurs."""
     rt = runtime.get_runtime()
-    event = resolve_event(
-        rt,
-        event_id=event_id,
-        find=find,
-        on=on,
-        days=days,
-        calendar_id=resolve_calendar(rt, calendar),
-    )
+    target = resolve_calendar(rt.calendar, calendar, for_write=True)
+    event = resolve_event(rt, event_id=event_id, find=find, on=on, days=days, calendar_id=target.id)
     draft = build_update_draft(
         rt,
         event,
@@ -332,16 +327,18 @@ def draft_update(
         duration_minutes=duration,
         location=location,
         notify_attendees=notify_attendees,
+        calendar_name=target.name,
     )
     _echo(format_update_preview(draft, rt.tz))
     if no_conflict_check:
         _echo("Conflicts: not checked (--no-conflict-check).")
     else:
-        conflicts = rt.calendar.find_conflicts(
+        conflicts = find_conflicts_everywhere(
+            rt.calendar,
             draft.effective_start,
             draft.effective_end,
             exclude_id=event.id,
-            calendar_id=event.calendar_id,
+            target=target,
         )
         _echo(format_conflicts(conflicts, rt.tz))
     saved = rt.drafts.save(draft)
@@ -369,11 +366,15 @@ def update(
     assert draft.kind == "update"
     verify_unchanged(rt, draft.original)
     _echo(format_update_preview(draft, rt.tz))
-    conflicts = rt.calendar.find_conflicts(
+    conflicts = find_conflicts_everywhere(
+        rt.calendar,
         draft.effective_start,
         draft.effective_end,
         exclude_id=draft.original.id,
-        calendar_id=draft.original.calendar_id,
+        target=CalendarInfo(
+            id=draft.original.calendar_id,
+            name=draft.original.calendar_name or draft.original.calendar_id,
+        ),
     )
     _echo(format_conflicts(conflicts, rt.tz))
     _echo()
@@ -403,15 +404,11 @@ def draft_delete(
 ) -> None:
     """Resolve one event and save a deletion draft. No write occurs."""
     rt = runtime.get_runtime()
-    event = resolve_event(
-        rt,
-        event_id=event_id,
-        find=find,
-        on=on,
-        days=days,
-        calendar_id=resolve_calendar(rt, calendar),
+    target = resolve_calendar(rt.calendar, calendar, for_write=True)
+    event = resolve_event(rt, event_id=event_id, find=find, on=on, days=days, calendar_id=target.id)
+    draft = build_delete_draft(
+        rt, event, notify_attendees=notify_attendees, calendar_name=target.name
     )
-    draft = build_delete_draft(rt, event, notify_attendees=notify_attendees)
     _echo(format_delete_preview(draft, rt.tz))
     saved = rt.drafts.save(draft)
     s = summary_for_delete(draft)

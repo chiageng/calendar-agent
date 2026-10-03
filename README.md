@@ -69,11 +69,19 @@ uv run outlook-calendar events --from 2026-10-05T00:00:00 --to 2026-10-12T00:00:
 uv run outlook-calendar logout           # revokes the token (best effort) and deletes the token file
 uv run outlook-calendar calendars        # list every calendar you can see, with IDs
 uv run outlook-calendar events --days 7 --calendar "Work"   # any calendar by name or ID
+uv run outlook-calendar tasks --days 7   # Google Tasks due in the window (read-only)
 ```
 
+Google Tasks are not calendar events: the Calendar API never returns them. The `tasks` command
+reads them through the Tasks API when `tasks.readonly` is in `GOOGLE_SCOPES` (default) and the
+**Google Tasks API is enabled** in your Cloud project (APIs & Services → Library). Tasks only have
+a due date, so they are listed by date.
+
 Every command that targets events (`events`, `draft-create`, `create`, `draft-update`,
-`draft-delete`) accepts `--calendar <name or ID>`; the default is your primary calendar. A draft
-remembers its calendar, so `update`/`delete` act on the right one. The agent always requests the
+`draft-delete`) accepts `--calendar <name or ID>`; the default is your primary calendar. Write
+commands refuse read-only calendars up front. A draft remembers its calendar, so `update`/`delete`
+act on the right one, and the audit log records it. Conflict checks scan the target calendar plus
+every calendar you can write to, so a new event on "Work" still reports a clash with your primary. The agent always requests the
 read-only `calendar.calendarlist.readonly` scope in addition to `GOOGLE_SCOPES` so it can resolve
 calendar names.
 

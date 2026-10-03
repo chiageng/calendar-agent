@@ -11,8 +11,9 @@ from typing import Annotated, Any
 import typer
 
 from . import __version__, runtime
+from .calendars import resolve_calendar
 from .errors import AgentError
-from .formatting import format_calendars, format_event_list, format_signed_in
+from .formatting import format_calendars, format_event_list, format_signed_in, format_tasks
 from .timeutil import DATETIME_HELP, format_dt, parse_user_datetime, start_of_day
 
 # pretty_exceptions_show_locals=False matters: a rich traceback could otherwise dump
@@ -152,11 +153,8 @@ def events(
     ] = None,
 ) -> None:
     """List events in a bounded time window of one calendar (default: primary)."""
-    from .write_flow import resolve_calendar
-
     rt = runtime.get_runtime()
     tz = rt.tz
-    calendar_id = resolve_calendar(rt, calendar)
     try:
         if from_:
             start = parse_user_datetime(from_, tz=tz)
@@ -172,8 +170,49 @@ def events(
         raise AgentError("--to must be after --from.")
     if end - start > timedelta(days=90):
         raise AgentError("The window may not exceed 90 days; narrow the range.")
-    events_found = rt.calendar.list_events(start, end, calendar_id=calendar_id)
-    echo(format_event_list(events_found, start, end, tz, calendar_id=calendar_id))
+    target = resolve_calendar(rt.calendar, calendar)  # network: after local validation
+    events_found = rt.calendar.list_events(start, end, calendar_id=target.id)
+    echo(
+        format_event_list(
+            events_found, start, end, tz, calendar_id=target.id, calendar_name=target.name
+        )
+    )
+
+
+@app.command()
+@handle_errors
+def tasks(
+    days: Annotated[int, typer.Option("--days", min=1, max=365, help="Today plus N-1 days.")] = 7,
+    from_: Annotated[
+        str | None, typer.Option("--from", help=f"Range start. {DATETIME_HELP}")
+    ] = None,
+    to: Annotated[str | None, typer.Option("--to", help="Range end (exclusive).")] = None,
+    include_completed: Annotated[
+        bool, typer.Option("--include-completed", help="Also show completed tasks.")
+    ] = False,
+) -> None:
+    """List Google Tasks due in a window (read-only). Tasks are not calendar events."""
+    rt = runtime.get_runtime()
+    if rt.tasks is None:
+        raise AgentError(
+            "Google Tasks support is not enabled for this configuration.",
+            hint="Use the Google provider and include tasks.readonly in GOOGLE_SCOPES, then "
+            "run 'login' again.",
+        )
+    tz = rt.tz
+    try:
+        if from_:
+            start = parse_user_datetime(from_, tz=tz)
+            end = parse_user_datetime(to, tz=tz) if to else start + timedelta(days=days)
+        else:
+            start = start_of_day(datetime.now(tz), tz)
+            end = start + timedelta(days=days)
+    except ValueError as exc:
+        raise AgentError(str(exc)) from exc
+    if end <= start:
+        raise AgentError("--to must be after --from.")
+    found = rt.tasks.list_all_tasks(start, end, include_completed=include_completed)
+    echo(format_tasks(found, start, end, tz))
 
 
 @app.command()

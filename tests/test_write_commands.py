@@ -41,8 +41,8 @@ def test_draft_create_reads_conflicts_but_never_writes(rt, graph: FakeGraphClien
     assert "End              : 2026-10-07 14:45 (Asia/Singapore)" in result.output
     assert "Conflicts: 1 existing event(s)" in result.output
     assert "Nothing has been written" in result.output
-    assert [c.method for c in graph.calls] == ["GET"]
-    assert graph.calls[0].path == "/me/calendarView"
+    assert {c.method for c in graph.calls} == {"GET"}  # calendar list + calendarView only
+    assert any(c.path.endswith("/calendarView") for c in graph.calls)
     assert [e["stage"] for e in audit_entries()] == ["proposed"]
 
 

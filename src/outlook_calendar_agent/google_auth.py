@@ -323,6 +323,14 @@ class GoogleAuthenticator:
         tokens = self._load()
         if not tokens or not tokens.get("refresh_token"):
             raise AuthError("Not signed in.", hint="Run: uv run outlook-calendar login")
+        granted = set(str(tokens.get("scope", "")).split())
+        required = [s for s in self._settings.full_scopes if "/auth/calendar" in s]
+        if granted and any(s not in granted for s in required):
+            raise AuthError(
+                "Your saved sign-in predates a permission this version needs.",
+                hint="Run 'login' again (Google will show the new permission as an extra "
+                "checkbox).",
+            )
         if tokens.get("expires_at", 0) - _REFRESH_MARGIN_SECONDS > self._clock():
             return str(tokens["access_token"])
         response = self._token_request(

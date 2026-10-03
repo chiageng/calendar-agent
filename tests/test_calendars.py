@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
+from outlook_calendar_agent.calendars import find_conflicts_everywhere, resolve_calendar
 from outlook_calendar_agent.cli import app
-from outlook_calendar_agent.errors import AgentError, AmbiguousEventError
-from outlook_calendar_agent.write_flow import resolve_calendar
+from outlook_calendar_agent.errors import AgentError
 
 from .conftest import GOOGLE_EVENT_ID, FakeGoogleClient, FakeGraphClient
 
@@ -31,20 +31,43 @@ def test_calendars_command_graph(rt, graph: FakeGraphClient) -> None:
 
 
 def test_resolve_calendar_by_name_id_and_errors(grt) -> None:
-    assert resolve_calendar(grt, None) == "primary"
-    assert resolve_calendar(grt, "Primary") == "primary"
-    assert resolve_calendar(grt, "work") == "work123@group.calendar.google.com"
-    assert (
-        resolve_calendar(grt, "fam456@group.calendar.google.com")
-        == "fam456@group.calendar.google.com"
-    )
+    backend = grt.calendar
+    assert resolve_calendar(backend, None).id == "primary"
+    assert resolve_calendar(backend, "  ").id == "primary"  # blank means primary
+    assert resolve_calendar(backend, "Primary").id == "primary"
+    work = resolve_calendar(backend, "work")
+    assert work.id == "work123@group.calendar.google.com" and work.name == "Work"
+    # IDs are compared case-insensitively
+    assert resolve_calendar(backend, "FAM456@group.calendar.google.com").name == "Family"
     with pytest.raises(AgentError, match="No calendar named"):
-        resolve_calendar(grt, "dentist")
-    grt.calendar._client.calendars.append(  # type: ignore[attr-defined]
+        resolve_calendar(backend, "dentist")
+    with pytest.raises(AgentError, match="read-only"):
+        resolve_calendar(backend, "Family", for_write=True)
+    backend._client.calendars.append(  # type: ignore[attr-defined]
         {"id": "w2@group.calendar.google.com", "summary": "Work 2", "accessRole": "writer"}
     )
-    with pytest.raises(AmbiguousEventError, match="Several calendars"):
-        resolve_calendar(grt, "wor")
+    with pytest.raises(AgentError, match="Several calendars"):
+        resolve_calendar(backend, "wor")
+
+
+def test_conflicts_are_checked_across_writable_calendars(grt, google: FakeGoogleClient) -> None:
+    from datetime import datetime, timedelta
+
+    from outlook_calendar_agent.timeutil import SGT
+
+    start = datetime(2026, 10, 7, 14, 0, tzinfo=SGT)
+    target = resolve_calendar(grt.calendar, "Work")
+    google.calls.clear()
+    conflicts = find_conflicts_everywhere(
+        grt.calendar, start, start + timedelta(hours=1), target=target
+    )
+    scanned = [c.path for c in google.calls if c.path.endswith("/events")]
+    # primary (by its real id) and Work are scanned once each; read-only Family is skipped
+    assert scanned == [
+        "/calendars/me%40example.com/events",
+        "/calendars/work123%40group.calendar.google.com/events",
+    ]
+    assert len(conflicts) == 2  # the fake returns the same event for every calendar
 
 
 def test_events_with_calendar_option_targets_that_calendar(grt, google: FakeGoogleClient) -> None:
@@ -52,7 +75,7 @@ def test_events_with_calendar_option_targets_that_calendar(grt, google: FakeGoog
         app, ["events", "--from", "2026-10-07", "--to", "2026-10-08", "--calendar", "Work"]
     )
     assert result.exit_code == 0, result.output
-    assert "Calendar: work123@group.calendar.google.com" in result.output
+    assert "Calendar: Work (work123@group.calendar.google.com)" in result.output
     assert google.calls[-1].path == "/calendars/work123%40group.calendar.google.com/events"
 
 
@@ -72,7 +95,7 @@ def test_draft_on_secondary_calendar_round_trips(grt, google: FakeGoogleClient) 
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "Calendar         : work123@group.calendar.google.com" in result.output
+    assert "Calendar         : Work (work123@group.calendar.google.com)" in result.output
     conflict_call = [c for c in google.calls if c.path.endswith("/events") and c.method == "GET"][
         -1
     ]
@@ -103,3 +126,36 @@ def test_update_keeps_calendar_of_resolved_event(grt, google: FakeGoogleClient) 
     assert google.write_calls[-1].path.startswith(
         "/calendars/work123%40group.calendar.google.com/events/"
     )
+
+
+def test_write_to_read_only_calendar_is_refused_before_drafting(
+    grt, google: FakeGoogleClient
+) -> None:
+    result = runner.invoke(
+        app,
+        ["draft-create", "--subject", "X", "--start", "2026-10-07T09:00", "--calendar", "Family"],
+    )
+    assert result.exit_code == 1 and "read-only" in result.output
+    assert (
+        not list(grt.settings.drafts_dir.glob("*.json"))
+        if grt.settings.drafts_dir.exists()
+        else True
+    )
+
+
+def test_audit_records_calendar_id(grt, google: FakeGoogleClient, google_audit_entries) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "draft-create",
+            "--subject",
+            "Standup",
+            "--start",
+            "2026-10-07T09:00",
+            "--calendar",
+            "Work",
+        ],
+    )
+    draft_id = result.output.split("Draft saved as ")[1].split(".")[0]
+    assert runner.invoke(app, ["create", "--draft", draft_id], input="yes\n").exit_code == 0
+    assert google_audit_entries()[-1]["calendar_id"] == "work123@group.calendar.google.com"

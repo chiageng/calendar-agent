@@ -7,7 +7,7 @@ Draft models build the exact Graph payloads. They never set ``isOnlineMeeting``,
 from __future__ import annotations
 
 import re
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -100,6 +100,22 @@ class CalendarInfo(BaseModel):
         flags = [f for f, on in (("primary", self.is_primary), ("writable", self.can_write)) if on]
         suffix = f"  [{', '.join(flags)}]" if flags else ""
         return f"{self.name}{suffix}\n    id: {self.id}"
+
+
+class TaskList(BaseModel):
+    id: str
+    name: str
+
+
+class TaskItem(BaseModel):
+    """A Google Task (read-only). Tasks have a due *date*, not a time."""
+
+    id: str
+    title: str
+    due: date | None = None
+    completed: bool = False
+    notes: str | None = None
+    list_name: str = "My Tasks"
 
 
 class CalendarEvent(BaseModel):
@@ -206,6 +222,7 @@ class EventSnapshot(BaseModel):
 
     id: str
     calendar_id: str = "primary"
+    calendar_name: str | None = None
     subject: str
     start: datetime
     end: datetime
@@ -217,13 +234,24 @@ class EventSnapshot(BaseModel):
     change_key: str | None = None
 
     @classmethod
-    def from_event(cls, event: CalendarEvent) -> EventSnapshot:
-        return cls(**event.model_dump(include=set(cls.model_fields)))
+    def from_event(cls, event: CalendarEvent, *, calendar_name: str | None = None) -> EventSnapshot:
+        data = event.model_dump(include=set(cls.model_fields) - {"calendar_name"})
+        return cls(**data, calendar_name=calendar_name)
+
+    @property
+    def calendar_label(self) -> str:
+        return _calendar_label(self.calendar_id, self.calendar_name)
 
     def matches(self, event: CalendarEvent) -> bool:
         if self.change_key and event.change_key:
             return self.change_key == event.change_key
         return self.subject == event.subject and self.start == event.start and self.end == event.end
+
+
+def _calendar_label(calendar_id: str, calendar_name: str | None) -> str:
+    if calendar_name and calendar_name != calendar_id:
+        return f"{calendar_name} ({calendar_id})"
+    return calendar_id
 
 
 def _require_aware(name: str, value: datetime | None) -> None:
@@ -243,6 +271,11 @@ class EventDraft(BaseModel):
     attendees: list[Attendee] = Field(default_factory=list)
     send_invitations: bool = False
     calendar_id: str = "primary"
+    calendar_name: str | None = None
+
+    @property
+    def calendar_label(self) -> str:
+        return _calendar_label(self.calendar_id, self.calendar_name)
 
     @model_validator(mode="after")
     def _validate(self) -> EventDraft:
