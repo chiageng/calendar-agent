@@ -63,7 +63,7 @@ def format_tasks(
             lines.append(label)
             current = label
         mark = "[x]" if task.completed else "[ ]"
-        extra = f" | {task.list_name}" if task.list_name != "My Tasks" else ""
+        extra = "" if task.in_default_list else f" | {task.list_name}"
         lines.append(f"  {mark} {task.title}{extra}")
     return "\n".join(lines)
 
@@ -135,7 +135,7 @@ def format_conflicts(conflicts: Sequence[CalendarEvent], tz: tzinfo = SGT) -> st
     if not conflicts:
         return "Conflicts: none in the proposed window."
     lines = [f"Conflicts: {len(conflicts)} existing event(s) overlap the proposed time:"]
-    lines += [format_event_line(e, tz) for e in conflicts]
+    lines += [f"{format_event_line(e, tz)}  [calendar: {e.calendar_id}]" for e in conflicts]
     return "\n".join(lines)
 
 

@@ -39,6 +39,7 @@ class GoogleTasksService:
         *,
         task_list: TaskList,
         include_completed: bool = False,
+        is_default_list: bool = True,
     ) -> list[TaskItem]:
         """Tasks in one list whose due date falls within [start, end) (local dates)."""
         if end <= start:
@@ -62,8 +63,10 @@ class GoogleTasksService:
                 completed=item.get("status") == "completed",
                 notes=item.get("notes") or None,
                 list_name=task_list.name,
+                in_default_list=is_default_list,
             )
             for item in raw
+            if (due := parse_task_due(item.get("due"))) is None or start_day <= due < end_day
         ]
         tasks.sort(key=lambda t: (t.due or date.max, t.title.lower()))
         return tasks
@@ -72,10 +75,14 @@ class GoogleTasksService:
         self, start: datetime, end: datetime, *, include_completed: bool = False
     ) -> list[TaskItem]:
         tasks: list[TaskItem] = []
-        for task_list in self.list_task_lists():
+        for index, task_list in enumerate(self.list_task_lists()):  # first list = default
             tasks.extend(
                 self.list_tasks(
-                    start, end, task_list=task_list, include_completed=include_completed
+                    start,
+                    end,
+                    task_list=task_list,
+                    include_completed=include_completed,
+                    is_default_list=index == 0,
                 )
             )
         tasks.sort(key=lambda t: (t.due or date.max, t.title.lower()))

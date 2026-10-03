@@ -46,6 +46,7 @@ def test_resolve_calendar_by_name_id_and_errors(grt) -> None:
     backend._client.calendars.append(  # type: ignore[attr-defined]
         {"id": "w2@group.calendar.google.com", "summary": "Work 2", "accessRole": "writer"}
     )
+    backend._calendars_cache = None  # the list is memoised per process; reset for the test
     with pytest.raises(AgentError, match="Several calendars"):
         resolve_calendar(backend, "wor")
 
@@ -67,7 +68,7 @@ def test_conflicts_are_checked_across_writable_calendars(grt, google: FakeGoogle
         "/calendars/me%40example.com/events",
         "/calendars/work123%40group.calendar.google.com/events",
     ]
-    assert len(conflicts) == 2  # the fake returns the same event for every calendar
+    assert len(conflicts) == 1  # the fake returns the same event id for every calendar: deduped
 
 
 def test_events_with_calendar_option_targets_that_calendar(grt, google: FakeGoogleClient) -> None:

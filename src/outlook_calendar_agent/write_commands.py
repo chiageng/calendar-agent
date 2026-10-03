@@ -19,7 +19,7 @@ from .formatting import (
     format_delete_preview,
     format_update_preview,
 )
-from .models import Attendee, CalendarInfo, Draft, EventDraft
+from .models import Attendee, Draft, EventDraft
 from .runtime import Runtime
 from .timeutil import DATETIME_HELP, format_dt
 from .write_flow import (
@@ -160,8 +160,9 @@ def _build_create_draft(
 def _show_create(rt: Runtime, draft: EventDraft, *, check_conflicts: bool) -> None:
     _echo(format_create_preview(draft, rt.tz))
     if check_conflicts:
-        target = CalendarInfo(id=draft.calendar_id, name=draft.calendar_name or draft.calendar_id)
-        conflicts = find_conflicts_everywhere(rt.calendar, draft.start, draft.end, target=target)
+        conflicts = find_conflicts_everywhere(
+            rt.calendar, draft.start, draft.end, target=draft.calendar_info
+        )
         _echo(format_conflicts(conflicts, rt.tz))
     else:
         _echo("Conflicts: not checked (--no-conflict-check).")
@@ -371,10 +372,7 @@ def update(
         draft.effective_start,
         draft.effective_end,
         exclude_id=draft.original.id,
-        target=CalendarInfo(
-            id=draft.original.calendar_id,
-            name=draft.original.calendar_name or draft.original.calendar_id,
-        ),
+        target=draft.original.calendar_info,
     )
     _echo(format_conflicts(conflicts, rt.tz))
     _echo()

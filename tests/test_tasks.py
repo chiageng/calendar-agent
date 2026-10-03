@@ -80,6 +80,15 @@ def test_list_tasks_bounds_and_sorting() -> None:
     assert call.params["dueMin"] == "2026-10-05T00:00:00Z"
     assert call.params["dueMax"] == "2026-10-12T00:00:00Z"
     assert call.params["showCompleted"] == "false"
+    client.tasks["L1"].append(
+        {
+            "id": "t9",
+            "title": "on the boundary",
+            "due": "2026-10-12T00:00:00.000Z",
+            "status": "needsAction",
+        }
+    )
+    assert "on the boundary" not in [t.title for t in service.list_all_tasks(start, end)]
     everything = service.list_all_tasks(start, end, include_completed=True)
     assert [t.title for t in everything] == ["check settlement", "send invoice", "renew passport"]
     with pytest.raises(ValueError):

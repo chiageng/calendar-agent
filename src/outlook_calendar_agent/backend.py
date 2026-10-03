@@ -38,6 +38,14 @@ class CalendarBackend(ABC):
     def list_calendars(self) -> list[CalendarInfo]:
         """All calendars the account can see."""
 
+    def list_calendars_cached(self) -> list[CalendarInfo]:
+        """``list_calendars`` memoised for the lifetime of this (short-lived) CLI process."""
+        cached = getattr(self, "_calendars_cache", None)
+        if cached is None:
+            cached = self.list_calendars()
+            self._calendars_cache = cached
+        return list(cached)
+
     @abstractmethod
     def list_events(
         self, start: datetime, end: datetime, *, calendar_id: str = PRIMARY

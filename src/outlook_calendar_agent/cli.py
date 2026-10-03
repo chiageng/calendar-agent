@@ -205,6 +205,8 @@ def tasks(
             start = parse_user_datetime(from_, tz=tz)
             end = parse_user_datetime(to, tz=tz) if to else start + timedelta(days=days)
         else:
+            if to:
+                raise AgentError("--to requires --from.")
             start = start_of_day(datetime.now(tz), tz)
             end = start + timedelta(days=days)
     except ValueError as exc:

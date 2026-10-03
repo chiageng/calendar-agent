@@ -239,11 +239,25 @@ class GoogleAuthenticator:
         self._store(response)
         return _decode_jwt_claims(response.get("id_token", ""))
 
+    def _missing_calendar_scopes(self, granted: str) -> list[str]:
+        """Required calendar scopes not covered by the grant (broader scopes count as covering)."""
+        granted_set = set(granted.split())
+        base = "https://www.googleapis.com/auth/"
+
+        def covered(scope: str) -> bool:
+            if scope in granted_set or base + "calendar" in granted_set:
+                return True
+            if scope.endswith(".readonly") and scope.removesuffix(".readonly") in granted_set:
+                return True
+            return scope == base + "calendar.calendarlist.readonly" and (
+                base + "calendar.readonly" in granted_set
+            )
+
+        return [s for s in self._settings.full_scopes if "/auth/calendar" in s and not covered(s)]
+
     def _ensure_calendar_scope_granted(self, granted: str) -> None:
         """Users can untick individual permissions; refuse a token without calendar access."""
-        granted_set = set(granted.split())
-        required = [s for s in self._settings.full_scopes if "/auth/calendar" in s]
-        missing = [s for s in required if s not in granted_set]
+        missing = self._missing_calendar_scopes(granted)
         if missing:
             self._token_path.unlink(missing_ok=True)
             raise PermissionDeniedError(
@@ -323,9 +337,8 @@ class GoogleAuthenticator:
         tokens = self._load()
         if not tokens or not tokens.get("refresh_token"):
             raise AuthError("Not signed in.", hint="Run: uv run outlook-calendar login")
-        granted = set(str(tokens.get("scope", "")).split())
-        required = [s for s in self._settings.full_scopes if "/auth/calendar" in s]
-        if granted and any(s not in granted for s in required):
+        granted = str(tokens.get("scope", ""))
+        if granted and self._missing_calendar_scopes(granted):
             raise AuthError(
                 "Your saved sign-in predates a permission this version needs.",
                 hint="Run 'login' again (Google will show the new permission as an extra "

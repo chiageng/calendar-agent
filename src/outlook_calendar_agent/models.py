@@ -116,6 +116,7 @@ class TaskItem(BaseModel):
     completed: bool = False
     notes: str | None = None
     list_name: str = "My Tasks"
+    in_default_list: bool = True
 
 
 class CalendarEvent(BaseModel):
@@ -242,6 +243,15 @@ class EventSnapshot(BaseModel):
     def calendar_label(self) -> str:
         return _calendar_label(self.calendar_id, self.calendar_name)
 
+    @property
+    def calendar_info(self) -> CalendarInfo:
+        return CalendarInfo(
+            id=self.calendar_id,
+            name=self.calendar_name or self.calendar_id,
+            is_primary=self.calendar_id == "primary",
+            can_write=True,
+        )
+
     def matches(self, event: CalendarEvent) -> bool:
         if self.change_key and event.change_key:
             return self.change_key == event.change_key
@@ -276,6 +286,15 @@ class EventDraft(BaseModel):
     @property
     def calendar_label(self) -> str:
         return _calendar_label(self.calendar_id, self.calendar_name)
+
+    @property
+    def calendar_info(self) -> CalendarInfo:
+        return CalendarInfo(
+            id=self.calendar_id,
+            name=self.calendar_name or self.calendar_id,
+            is_primary=self.calendar_id == "primary",
+            can_write=True,
+        )
 
     @model_validator(mode="after")
     def _validate(self) -> EventDraft:

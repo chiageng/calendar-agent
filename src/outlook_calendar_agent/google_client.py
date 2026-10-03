@@ -79,10 +79,11 @@ class GoogleClient(JsonApiClient):
                 hint="Wait a moment and retry.",
             )
         if status == 403 and reason in {"accessNotConfigured", "SERVICE_DISABLED"}:
+            api = "Google Tasks API" if "tasks" in message.lower() else "Google Calendar API"
             return PermissionDeniedError(
-                f"The Google Calendar API is not enabled for this project ({detail}).",
-                hint="Google Cloud console → APIs & Services → Library → Google Calendar API "
-                "→ Enable, then retry.",
+                f"The {api} is not enabled for this Cloud project ({detail}).",
+                hint=f"Google Cloud console → APIs & Services → Library → {api} → Enable, "
+                "wait a minute, then retry.",
             )
         if status == 403:
             return PermissionDeniedError(
