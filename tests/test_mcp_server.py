@@ -1,0 +1,146 @@
+"""MCP server: tool listing, reads, drafts and the confirm gate, via an in-process client."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+from mcp import Client
+
+from outlook_calendar_agent.mcp_server import build_server
+
+from .conftest import GOOGLE_EVENT_ID, FakeGoogleClient
+
+
+def _text(result) -> str:
+    return "".join(getattr(c, "text", "") for c in result.content)
+
+
+def _call(server, name: str, **args):
+    async def go():
+        async with Client(server) as client:
+            return await client.call_tool(name, args)
+
+    return asyncio.run(go())
+
+
+@pytest.fixture
+def server(grt):
+    return build_server(rt_factory=lambda: grt)
+
+
+def test_tool_catalogue(server) -> None:
+    async def go():
+        async with Client(server) as client:
+            return await client.list_tools()
+
+    tools = asyncio.run(go())
+    names = {t.name for t in tools.tools}
+    assert names == {
+        "now",
+        "list_calendars",
+        "list_events",
+        "find_free_slots",
+        "list_tasks",
+        "draft_create_event",
+        "draft_update_event",
+        "draft_delete_event",
+        "list_drafts",
+        "confirm_draft",
+        "discard_draft",
+    }
+    schema = next(t for t in tools.tools if t.name == "draft_create_event").input_schema
+    assert schema["required"] == ["subject", "when"]
+
+
+def test_reads(server, google: FakeGoogleClient) -> None:
+    assert "Asia/Singapore" in _text(_call(server, "now"))
+    assert "me@example.com  [primary, writable]" in _text(_call(server, "list_calendars"))
+    out = _text(_call(server, "list_events", when="2026-10-07"))
+    assert "Project review" in out and "14:00–15:00" in out
+    out = _text(_call(server, "find_free_slots", day="2026-10-07", duration_minutes=60))
+    assert "09:00–14:00" in out and "15:00–18:00" in out
+    assert google.write_calls == []
+
+
+def test_ambiguity_and_errors_are_returned_not_raised(server) -> None:
+    out = _text(_call(server, "draft_create_event", subject="X", when="tomorrow morning"))
+    assert out.startswith("QUESTION:") and "specific time" in out
+    out = _text(
+        _call(server, "draft_create_event", subject="X", when="2026-10-07T14:00", calendar="Family")
+    )
+    assert out.startswith("ERROR:") and "read-only" in out
+    out = _text(_call(server, "confirm_draft", draft_id="d-000000", user_reply="yes"))
+    assert out.startswith("ERROR:") and "not found" in out
+
+
+def test_draft_then_confirm_requires_literal_yes(
+    server, grt, google: FakeGoogleClient, google_audit_entries
+) -> None:
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Standup",
+            when="2026-10-07T09:00",
+            duration_minutes=15,
+            location="Zoom",
+        )
+    )
+    assert "PROPOSED CHANGE" in out and "Draft saved as d-" in out
+    draft_id = out.split("Draft saved as ")[1].split(".")[0]
+    assert google.write_calls == []
+
+    # Anything but the literal 'yes' discards the draft and writes nothing.
+    out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="Yes"))
+    assert "Not confirmed" in out and google.write_calls == []
+    assert [e["stage"] for e in google_audit_entries()] == ["proposed", "rejected"]
+
+    out = _text(
+        _call(
+            server,
+            "draft_create_event",
+            subject="Standup",
+            when="2026-10-07T09:00",
+            duration_minutes=15,
+        )
+    )
+    draft_id = out.split("Draft saved as ")[1].split(".")[0]
+    out = _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="yes"))
+    assert out.startswith("Created: Standup")
+    assert len(google.write_calls) == 1 and google.write_calls[0].method == "POST"
+    assert google_audit_entries()[-1]["stage"] == "succeeded"
+    assert google_audit_entries()[-3]["via"] == "mcp"  # the 'proposed' entry is tagged
+    assert "No pending drafts" in _text(_call(server, "list_drafts"))
+
+
+def test_update_and_delete_drafts(server, google: FakeGoogleClient) -> None:
+    out = _text(
+        _call(
+            server,
+            "draft_update_event",
+            find="project review",
+            on="2026-10-07",
+            new_when="2026-10-07T16:00",
+        )
+    )
+    assert "16:00 (Asia/Singapore)   [CHANGED]" in out
+    draft_id = out.split("Draft saved as ")[1].split(".")[0]
+    assert _text(_call(server, "confirm_draft", draft_id=draft_id, user_reply="yes")).startswith(
+        "Updated:"
+    )
+    assert google.write_calls[-1].method == "PATCH"
+
+    out = _text(_call(server, "draft_delete_event", event_id=GOOGLE_EVENT_ID))
+    assert "PROPOSED DELETION" in out
+    draft_id = out.split("Draft saved as ")[1].split(".")[0]
+    assert "discarded" in _text(_call(server, "discard_draft", draft_id=draft_id))
+    assert [c.method for c in google.write_calls] == ["PATCH"]
+
+
+def test_text_result_has_no_json_wrapping(server) -> None:
+    result = _call(server, "now")
+    assert result.content[0].type == "text"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.content[0].text)

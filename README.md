@@ -161,6 +161,20 @@ Each audit line records `action` (create/update/delete), `stage`
 (proposed/confirmed/rejected/succeeded/failed), draft ID, event ID, subject, start and end.
 Tokens and credentials are never written; the logger rejects any key that looks like one.
 
+## 3b. Using the agent from a supervisor (MCP)
+
+`uv run outlook-calendar mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio so
+another agent (the Telegram supervisor in `supervisor-agent`) can call the calendar as tools:
+`now`, `list_calendars`, `list_events`, `find_free_slots`, `list_tasks`, `draft_create_event`,
+`draft_update_event`, `draft_delete_event`, `list_drafts`, `confirm_draft`, `discard_draft`.
+
+- Date and time arguments are the user's own phrases ("next Tuesday 2pm", "5 Oct to 9 Oct") and
+  are resolved deterministically by `dates.py`; vague phrases come back as `QUESTION: ...`.
+- `draft_*` tools never write. They return the preview and a draft id.
+- `confirm_draft(draft_id, user_reply)` applies the draft only when `user_reply` is exactly `yes`
+  and discards it otherwise, so the confirmation gate is enforced in this repo, not in any LLM.
+- Errors come back as `ERROR: ...` text so the calling model can relay them.
+
 ## 4. Development
 
 ```bash

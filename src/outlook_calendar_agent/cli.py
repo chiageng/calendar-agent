@@ -245,6 +245,15 @@ def drafts() -> None:
         echo(f"{draft.id}  {draft.kind:<6}  {detail}")
 
 
+@app.command()
+@handle_errors
+def mcp() -> None:
+    """Run the MCP (Model Context Protocol) server over stdio for a supervisor agent."""
+    from .mcp_server import main as mcp_main
+
+    mcp_main()
+
+
 def main() -> None:
     try:
         app()
